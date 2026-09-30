@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Prototipo Novato</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0c0a12; overflow: hidden; font-family: "Segoe UI", sans-serif; color: #efe6d2; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #help { position: fixed; left: 12px; top: 10px; background: rgba(20,16,28,.85); border: 1px solid #6b5a3a; border-radius: 8px; padding: 8px 12px; font-size: 14px; line-height: 1.6; }
+  #help b { color: #f5c542; }
+  #mode { position: fixed; right: 12px; top: 10px; background: rgba(20,16,28,.85); border: 1px solid #6b5a3a; border-radius: 8px; padding: 8px 12px; font-size: 14px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="help">
+  <b>WASD</b> andar · <b>J</b> atacar · <b>K</b> hechizo · <b>Espacio</b> esquivar · <b>H</b> recibir golpe<br>
+  Sin tocar nada hace una demo automática.
+</div>
+<div id="mode"></div>
+<script>
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+const modeEl = document.getElementById("mode");
+let W = 0, H = 0, DPR = 1;
+function resize() {
+  DPR = Math.min(2, devicePixelRatio || 1);
+  W = innerWidth; H = innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+}
+addEventListener("resize", () => { resize(); place(); }); resize();
+
+const img = new Image();
+img.src = "novice.png";
+let white = null; // white silhouette for hit flash
+img.onload = () => {
+  white = document.createElement("canvas");
+  white.width = img.width; white.height = img.height;
+  const w = white.getContext("2d");
+  w.drawImage(img, 0, 0);
+  w.globalCompositeOperation = "source-in";
+  w.fillStyle = "#fff"; w.fillRect(0, 0, img.width, img.height);
+};
+
+const keys = new Set();
+let lastInput = -10;
+addEventListener("keydown", e => { keys.add(e.code); lastInput = time; if (e.code === "Space") e.preventDefault();
+  if (e.code === "KeyJ") startAttack(); if (e.code === "KeyK") startCast(); if (e.code === "Space") startDash(); if (e.code === "KeyH") hurt(); });
+addEventListener("keyup", e => keys.delete(e.code));
+
+const SPRITE_H = 190;
+// The generated drawing looks/points to the LEFT, so it must be mirrored when facing right.
+const BASE_FACING = -1;
+const hero = { x: 0, y: 0, vx: 0, vy: 0, facing: 1, flip: 1, walk: 0, moving: false,
+  action: null, actionT: 0, flash: 0, ghosts: [], dashDir: {x: 1, y: 0}, lift: 0 };
+const target = { x: 0, y: 0, flash: 0, knock: 0, hp: 1, squash: 0 };
+let particles = [], floaters = [], rings = [], slashes = [], orbs = [], dust = [];
+let time = 0, hitstop = 0, shake = 0, flashScreen = 0, stepTimer = 0;
+let demoT = 0, demoStep = 0;
+
+function place() { const gap = Math.min(W * 0.26, 260); hero.x = W / 2 - gap; hero.y = H * 0.66; target.x = W / 2 + gap; target.y = H * 0.66; }
+place();
+
+function rnd(a, b) { return a + Math.random() * (b - a); }
+function burst(x, y, color, n, speed = 260, life = 0.6, size = 5) {
+  for (let i = 0; i < n; i++) { const a = Math.random() * Math.PI * 2, s = rnd(speed * .3, speed);
+    particles.push({x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 60, life: rnd(life * .5, life), max: life, color, size: rnd(size * .5, size), grav: 500, add: true}); }
+}
+
+function startAttack() { if (hero.action) return; hero.action = "attack"; hero.actionT = 0; }
+function startCast() { if (hero.action) return; hero.action = "cast"; hero.actionT = 0; }
+function startDash() { if (hero.action) return; hero.action = "dash"; hero.actionT = 0;
+  const mx = (keys.has("KeyD") ? 1 : 0) - (keys.has("KeyA") ? 1 : 0), my = (keys.has("KeyS") ? 1 : 0) - (keys.has("KeyW") ? 1 : 0);
+  const l = Math.hypot(mx, my); hero.dashDir = l ? {x: mx / l, y: my / l} : {x: hero.facing, y: 0}; }
+function hurt() { hero.flash = 1; shake = 10; hero.x -= hero.facing * 26;
+  floaters.push({text: "-12", x: hero.x, y: hero.y - SPRITE_H - 10, life: 1, color: "#ff6b6b", size: 30}); burst(hero.x, hero.y - SPRITE_H * .5, "#ff8787", 14); }
+
+function hitTarget(amount, color, crit) {
+  target.flash = 1; target.knock = 22; target.squash = 1; hitstop = crit ? 0.09 : 0.055; shake = crit ? 12 : 6;
+  floaters.push({text: String(amount) + (crit ? "!" : ""), x: target.x + rnd(-10, 10), y: target.y - 120, life: 1.1, color: crit ? "#ffd43b" : "#fff", size: crit ? 40 : 30, pop: 0});
+  burst(target.x - 20, target.y - 60, color, crit ? 26 : 16, 340);
+}
+
+function update(dt) {
+  time += dt;
+  if (hitstop > 0) { hitstop -= dt; return; }
+  shake = Math.max(0, shake - dt * 40); flashScreen = Math.max(0, flashScreen - dt * 3);
+  hero.flash = Math.max(0, hero.flash - dt * 4); target.flash = Math.max(0, target.flash - dt * 4);
+  target.knock *= Math.pow(0.001, dt); target.squash = Math.max(0, target.squash - dt * 3);
+
+  // Demo when idle
+  if (time - lastInput > 3) {
+    demoT += dt;
+    const seq = [["walkR", 0.8], ["attack", 0.9], ["walkL", 0.8], ["cast", 1.6], ["dash", 0.6], ["idle", 1.2], ["attack", 0.9], ["hurt", 0.9]];
+    const [name, dur] = seq[demoStep % seq.length];
+    modeEl.textContent = "Demo: " + ({walkR: "andar →", walkL: "andar ←", attack: "ataque", cast: "hechizo", dash: "esquiva", idle: "reposo", hurt: "recibe golpe"})[name];
+    if (demoT === dt) { if (name === "attack") startAttack(); if (name === "cast") startCast(); if (name === "dash") { hero.dashDir = {x: 1, y: 0}; hero.action = "dash"; hero.actionT = 0; } if (name === "hurt") hurt(); }
+    let ax = name === "walkR" ? 1 : name === "walkL" ? -1 : 0;
+    moveHero(dt, ax, 0);
+    if (demoT >= dur) { demoT = 0; demoStep++; }
+  } else {
+    modeEl.textContent = "Control manual";
+    let ax = (keys.has("KeyD") || keys.has("ArrowRight") ? 1 : 0) - (keys.has("KeyA") || keys.has("ArrowLeft") ? 1 : 0);
+    let ay = (keys.has("KeyS") || keys.has("ArrowDown") ? 1 : 0) - (keys.has("KeyW") || keys.has("ArrowUp") ? 1 : 0);
+    if (ax && ay) { ax *= Math.SQRT1_2; ay *= Math.SQRT1_2; }
+    moveHero(dt, ax, ay);
+  }
+
+  // Paper-flip facing
+  hero.flip += (hero.facing - hero.flip) * Math.min(1, dt * 16);
+
+  // Actions
+  if (hero.action) {
+    hero.actionT += dt;
+    const t = hero.actionT;
+    if (hero.action === "attack") {
+      if (t >= 0.12 && !hero.didHit) { hero.didHit = true; slashes.push({x: hero.x + hero.facing * 60, y: hero.y - SPRITE_H * .48, dir: hero.facing, t: 0});
+        if (Math.abs(target.x - hero.x) < 260) hitTarget(Math.round(rnd(14, 22)), "#fff3bf", Math.random() < .3); }
+      if (t > 0.5) { hero.action = null; hero.didHit = false; }
+    } else if (hero.action === "cast") {
+      if (t < 0.9 && Math.random() < 0.8) { const a = Math.random() * Math.PI * 2, r = rnd(40, 70);
+        particles.push({x: hero.x + Math.cos(a) * r, y: hero.y - 10 + Math.sin(a) * r * .35, vx: 0, vy: rnd(-120, -60), life: .8, max: .8, color: "#9775fa", size: rnd(3, 6), grav: 0, add: true}); }
+      if (t >= 0.9 && !hero.didHit) { hero.didHit = true; orbs.push({x: hero.x + hero.facing * 40, y: hero.y - SPRITE_H * .6, tx: target.x, ty: target.y - 70, t: 0}); }
+      if (t > 1.3) { hero.action = null; hero.didHit = false; }
+    } else if (hero.action === "dash") {
+      hero.x += hero.dashDir.x * 900 * dt; hero.y += hero.dashDir.y * 900 * dt; clampHero();
+      if (Math.floor(t * 60) % 2 === 0) hero.ghosts.push({x: hero.x, y: hero.y, flip: hero.flip, life: .35});
+      if (t > 0.2) { hero.action = null; }
+    }
+  }
+  hero.lift += ((hero.action === "cast" && hero.actionT < 1.0 ? 14 : 0) - hero.lift) * Math.min(1, dt * 8);
+
+  // Orbs
+  for (const o of orbs) { o.t += dt * 2.2; const k = Math.min(1, o.t);
+    o.cx = o.x + (o.tx - o.x) * k; o.cy = o.y + (o.ty - o.y) * k - Math.sin(k * Math.PI) * 60;
+    particles.push({x: o.cx, y: o.cy, vx: rnd(-30, 30), vy: rnd(-30, 30), life: .4, max: .4, color: "#b197fc", size: 7, grav: 0, add: true});
+    if (o.t >= 1 && !o.done) { o.done = true; hitTarget(Math.round(rnd(28, 40)), "#b197fc", false); rings.push({x: o.tx, y: o.ty, t: 0, color: "#b197fc"}); flashScreen = .35; burst(o.tx, o.ty, "#e5dbff", 30, 420, .8, 7); } }
+  orbs = orbs.filter(o => !o.done);
+  for (const s of slashes) s.t += dt; slashes = slashes.filter(s => s.t < .28);
+  for (const r of rings) r.t += dt; rings = rings.filter(r => r.t < .6);
+  for (const g of hero.ghosts) g.life -= dt; hero.ghosts = hero.ghosts.filter(g => g.life > 0);
+  for (const p of particles) { p.life -= dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vy += p.grav * dt; p.vx *= Math.pow(.2, dt); }
+  particles = particles.filter(p => p.life > 0);
+  for (const d of dust) { d.life -= dt; d.x += d.vx * dt; d.y += d.vy * dt; d.r += dt * 18; }
+  dust = dust.filter(d => d.life > 0);
+  for (const f of floaters) { f.life -= dt; f.y -= dt * 50; f.pop = (f.pop || 0) + dt; }
+  floaters = floaters.filter(f => f.life > 0);
+}
+
+function clampHero() { hero.x = Math.max(80, Math.min(W - 80, hero.x)); hero.y = Math.max(H * .35, Math.min(H - 40, hero.y)); }
+function moveHero(dt, ax, ay) {
+  if (hero.action === "dash") return;
+  const speed = hero.action ? 60 : 230;
+  hero.moving = (ax !== 0 || ay !== 0) && !hero.action;
+  if (ax !== 0) hero.facing = ax > 0 ? 1 : -1;
+  hero.x += ax * speed * dt; hero.y += ay * speed * dt; clampHero();
+  if (hero.moving) { hero.walk += dt * 11; stepTimer -= dt;
+    if (stepTimer <= 0) { stepTimer = Math.PI / 11; dust.push({x: hero.x - hero.facing * 18, y: hero.y, vx: -hero.facing * 30, vy: -10, r: 6, life: .45}); } }
+  else hero.walk = 0;
+}
+
+function drawHero() {
+  const t = hero.actionT;
+  let bob = 0, tilt = 0, sx = 1, sy = 1, offX = 0;
+  if (hero.moving) {
+    const s = Math.sin(hero.walk);
+    bob = -Math.abs(s) * 12; tilt = s * 0.06 + hero.facing * 0.05;
+    const land = 1 - Math.abs(s); sy = 1 - land * 0.05; sx = 1 + land * 0.04;
+  } else {
+    sy = 1 + Math.sin(time * 2.4) * 0.018; sx = 1 - Math.sin(time * 2.4) * 0.01;
+  }
+  if (hero.action === "attack") {
+    if (t < 0.12) { const k = t / 0.12; tilt = -0.18 * k * hero.facing; sy = 1 - 0.06 * k; sx = 1 + 0.05 * k; offX = -10 * k * hero.facing; }
+    else if (t < 0.22) { const k = (t - 0.12) / 0.1; tilt = (-0.18 + 0.45 * k) * hero.facing; sy = 1 + 0.08 * (1 - k); sx = 1 - 0.06 * (1 - k); offX = (-10 + 50 * k) * hero.facing; }
+    else { const k = Math.min(1, (t - 0.22) / 0.28); tilt = 0.27 * (1 - k) * hero.facing; offX = 40 * (1 - k) * hero.facing; }
+  }
+  if (hero.action === "cast") { tilt = Math.sin(time * 20) * 0.01; sy = 1 + 0.03; }
+  if (hero.action === "dash") { tilt = hero.dashDir.x * 0.25; sx = 1.15; sy = 0.9; }
+
+  // Ghost trail
+  for (const g of hero.ghosts) {
+    ctx.save(); ctx.globalAlpha = g.life * 1.6; ctx.globalCompositeOperation = "lighter";
+    ctx.translate(g.x, g.y); ctx.scale(g.flip * BASE_FACING, 1);
+    if (white) { ctx.filter = "hue-rotate(180deg)"; ctx.drawImage(white, -img.width * scaleK() / 2, -img.height * scaleK(), img.width * scaleK(), img.height * scaleK()); ctx.filter = "none"; }
+    ctx.restore();
+  }
+  // Shadow
+  ctx.save(); ctx.fillStyle = "rgba(0,0,0,.4)"; ctx.beginPath();
+  ctx.ellipse(hero.x + offX, hero.y + 2, 46 * (1 + bob / 60), 12 * (1 + bob / 60), 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+  if (hero.action === "cast" && t < 1.2) drawMagicCircle(hero.x, hero.y, Math.min(1, t * 3) * (t > 0.95 ? Math.max(0, 1 - (t - .95) * 4) : 1));
+
+  ctx.save();
+  ctx.translate(hero.x + offX, hero.y + bob - hero.lift);
+  ctx.rotate(tilt);
+  ctx.scale(sx * hero.flip * BASE_FACING, sy);
+  const k = scaleK();
+  const w = img.width * k, h = img.height * k;
+  ctx.drawImage(img, -w / 2, -h, w, h);
+  if (hero.flash > 0 && white) { ctx.globalAlpha = hero.flash; ctx.drawImage(white, -w / 2, -h, w, h); }
+  ctx.restore();
+  if (hero.action === "cast" && t < 1) { ctx.save(); ctx.globalCompositeOperation = "lighter"; const gr = ctx.createRadialGradient(hero.x, hero.y - 90, 10, hero.x, hero.y - 90, 150);
+    gr.addColorStop(0, "rgba(151,117,250,.35)"); gr.addColorStop(1, "rgba(151,117,250,0)"); ctx.fillStyle = gr; ctx.fillRect(hero.x - 160, hero.y - 250, 320, 320); ctx.restore(); }
+}
+function scaleK() { return SPRITE_H / img.height; }
+
+function drawMagicCircle(x, y, a) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(1, 0.35); ctx.globalAlpha = a; ctx.globalCompositeOperation = "lighter";
+  ctx.strokeStyle = "#b197fc"; ctx.lineWidth = 3; ctx.shadowColor = "#9775fa"; ctx.shadowBlur = 16;
+  for (const [r, sp] of [[90, 1], [70, -1.6]]) { ctx.save(); ctx.rotate(time * sp); ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.stroke();
+    for (let i = 0; i < 6; i++) { const an = i / 6 * Math.PI * 2; ctx.beginPath(); ctx.moveTo(Math.cos(an) * r, Math.sin(an) * r); ctx.lineTo(Math.cos(an + 2.1) * r, Math.sin(an + 2.1) * r); ctx.stroke(); } ctx.restore(); }
+  ctx.restore();
+}
+
+function drawTarget() {
+  const x = target.x + target.knock, y = target.y;
+  const sq = target.squash;
+  ctx.save(); ctx.fillStyle = "rgba(0,0,0,.4)"; ctx.beginPath(); ctx.ellipse(x, y + 2, 50, 12, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+  ctx.save(); ctx.translate(x, y); ctx.scale(1 + sq * .15 + Math.sin(time * 4) * .03, 1 - sq * .15 - Math.sin(time * 4) * .03);
+  const g = ctx.createRadialGradient(-15, -70, 10, 0, -50, 70); g.addColorStop(0, "#b2f2bb"); g.addColorStop(1, "#2f9e44");
+  ctx.beginPath(); ctx.moveTo(-55, 0); ctx.quadraticCurveTo(-60, -95, 0, -100); ctx.quadraticCurveTo(60, -95, 55, 0); ctx.closePath();
+  ctx.fillStyle = g; ctx.fill(); ctx.lineWidth = 4; ctx.strokeStyle = "#143d1c"; ctx.stroke();
+  ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.ellipse(-18, -55, 11, 14, 0, 0, 7); ctx.ellipse(18, -55, 11, 14, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = "#15101c"; ctx.beginPath(); ctx.ellipse(-20, -53, 5, 7, 0, 0, 7); ctx.ellipse(16, -53, 5, 7, 0, 0, 7); ctx.fill();
+  if (target.flash > 0) { ctx.globalAlpha = target.flash; ctx.globalCompositeOperation = "lighter"; ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.moveTo(-55, 0); ctx.quadraticCurveTo(-60, -95, 0, -100); ctx.quadraticCurveTo(60, -95, 55, 0); ctx.fill(); }
+  ctx.restore();
+}
+
+function drawSlash(s) {
+  const k = s.t / 0.28;
+  ctx.save(); ctx.translate(s.x, s.y); ctx.scale(s.dir, 1); ctx.globalCompositeOperation = "lighter";
+  const start = -1.9, end = start + 2.6 * Math.min(1, k * 2.2);
+  for (let i = 0; i < 3; i++) {
+    ctx.beginPath(); ctx.arc(0, 0, 95 - i * 10, start + (end - start) * .15 * i, end);
+    ctx.strokeStyle = i === 0 ? `rgba(255,255,255,${1 - k})` : `rgba(255,236,153,${(1 - k) * .6})`;
+    ctx.lineWidth = (14 - i * 4) * (1 - k * .5); ctx.lineCap = "round"; ctx.shadowColor = "#ffe066"; ctx.shadowBlur = 20; ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function render() {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.save();
+  if (shake > 0) ctx.translate(rnd(-shake, shake) * .5, rnd(-shake, shake) * .5);
+  // Floor
+  const bg = ctx.createLinearGradient(0, 0, 0, H); bg.addColorStop(0, "#2a2233"); bg.addColorStop(0.35, "#3d3345"); bg.addColorStop(1, "#1a1520");
+  ctx.fillStyle = bg; ctx.fillRect(-20, -20, W + 40, H + 40);
+  ctx.strokeStyle = "rgba(0,0,0,.25)"; ctx.lineWidth = 2;
+  for (let y = H * .35; y < H; y += 48) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  for (let x = 0; x < W; x += 96) { ctx.beginPath(); ctx.moveTo(x, H * .35); ctx.lineTo(x, H); ctx.stroke(); }
+  // Warm light around the hero
+  ctx.save(); ctx.globalCompositeOperation = "lighter"; const lg = ctx.createRadialGradient(hero.x, hero.y - 60, 20, hero.x, hero.y - 60, 360);
+  lg.addColorStop(0, "rgba(255,190,110,.18)"); lg.addColorStop(1, "rgba(255,190,110,0)"); ctx.fillStyle = lg; ctx.fillRect(0, 0, W, H); ctx.restore();
+
+  for (const d of dust) { ctx.fillStyle = `rgba(200,190,170,${d.life})`; ctx.beginPath(); ctx.arc(d.x, d.y, d.r, 0, 7); ctx.fill(); }
+  const order = [[target.y, drawTarget], [hero.y, drawHero]].sort((a, b) => a[0] - b[0]);
+  for (const [, fn] of order) fn();
+  for (const s of slashes) drawSlash(s);
+  for (const r of rings) { ctx.save(); ctx.globalCompositeOperation = "lighter"; ctx.strokeStyle = r.color; ctx.globalAlpha = 1 - r.t / .6; ctx.lineWidth = 8 * (1 - r.t / .6);
+    ctx.beginPath(); ctx.ellipse(r.x, r.y + 40, 30 + r.t * 260, (30 + r.t * 260) * .35, 0, 0, 7); ctx.stroke(); ctx.restore(); }
+  for (const o of orbs) { if (o.cx === undefined) continue; ctx.save(); ctx.globalCompositeOperation = "lighter"; const og = ctx.createRadialGradient(o.cx, o.cy, 2, o.cx, o.cy, 40);
+    og.addColorStop(0, "rgba(255,255,255,1)"); og.addColorStop(.3, "rgba(177,151,252,.9)"); og.addColorStop(1, "rgba(151,117,250,0)"); ctx.fillStyle = og; ctx.beginPath(); ctx.arc(o.cx, o.cy, 40, 0, 7); ctx.fill(); ctx.restore(); }
+  ctx.save(); ctx.globalCompositeOperation = "lighter";
+  for (const p of particles) { ctx.globalAlpha = Math.min(1, p.life / p.max * 1.5); ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, p.size * (p.life / p.max + .3), 0, 7); ctx.fill(); }
+  ctx.restore();
+  for (const f of floaters) { const pop = Math.min(1, (f.pop || 0) * 8); const size = f.size * (0.6 + 0.6 * pop - 0.2 * Math.max(0, pop - 1));
+    ctx.save(); ctx.globalAlpha = Math.min(1, f.life * 2); ctx.font = `800 ${size}px 'Segoe UI', sans-serif`; ctx.textAlign = "center";
+    ctx.lineWidth = 6; ctx.strokeStyle = "rgba(0,0,0,.8)"; ctx.strokeText(f.text, f.x, f.y); ctx.fillStyle = f.color; ctx.fillText(f.text, f.x, f.y); ctx.restore(); }
+  ctx.restore();
+  if (flashScreen > 0) { ctx.fillStyle = `rgba(230,220,255,${flashScreen * .5})`; ctx.fillRect(0, 0, W, H); }
+}
+
+let last = performance.now();
+function loop(now) { const dt = Math.min(0.05, (now - last) / 1000); last = now; if (img.complete && img.naturalWidth) { update(dt); render(); } requestAnimationFrame(loop); }
+window.stepN = (n) => { for (let i = 0; i < n; i++) update(1 / 60); render(); };
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

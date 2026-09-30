@@ -1,0 +1,86 @@
+{
+ "width": 416,
+ "height": 608,
+ "parts": [
+  {
+   "name": "torso",
+   "file": "torso.png",
+   "x": 152.0,
+   "y": 262.0,
+   "pivotX": 208.0,
+   "pivotY": 410.0,
+   "z": 4
+  },
+  {
+   "name": "head",
+   "file": "head.png",
+   "x": 70.5,
+   "y": 13.0,
+   "pivotX": 208.0,
+   "pivotY": 280.0,
+   "z": 5
+  },
+  {
+   "name": "arm_r",
+   "file": "arm_r.png",
+   "x": 103.0,
+   "y": 277.0,
+   "pivotX": 168.0,
+   "pivotY": 295.0,
+   "z": 2
+  },
+  {
+   "name": "arm_l",
+   "file": "arm_l.png",
+   "x": 227.5,
+   "y": 276.5,
+   "pivotX": 248.0,
+   "pivotY": 295.0,
+   "z": 3
+  },
+  {
+   "name": "leg_r",
+   "file": "leg_r.png",
+   "x": 117.5,
+   "y": 387.5,
+   "pivotX": 189.0,
+   "pivotY": 410.0,
+   "z": 0
+  },
+  {
+   "name": "leg_l",
+   "file": "leg_l.png",
+   "x": 204.5,
+   "y": 387.5,
+   "pivotX": 227.0,
+   "pivotY": 410.0,
+   "z": 1
+  }
+ ],
+ "joints": {
+  "neck": [
+   208.0,
+   280.0
+  ],
+  "hip": [
+   208.0,
+   410.0
+  ],
+  "wrist_r": [
+   118.0,
+   407.5
+  ],
+  "wrist_l": [
+   298.0,
+   407.5
+  ],
+  "ankle_r": [
+   180.0,
+   542.5
+  ],
+  "ankle_l": [
+   236.0,
+   542.5
+  ]
+ }
+}

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Prueba C · Vídeo Wan</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0c0a12; overflow: hidden; font-family: "Segoe UI", sans-serif; color: #efe6d2; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  .box { position: fixed; background: rgba(20,16,28,.85); border: 1px solid #6b5a3a; border-radius: 8px; padding: 8px 12px; font-size: 14px; line-height: 1.6; }
+  #help { left: 12px; top: 10px; } #opts { left: 12px; bottom: 10px; }
+  b { color: #f5c542; } label { margin-right: 12px; cursor: pointer; } select { background: #262033; color: #efe6d2; border: 1px solid #6b5a3a; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="help" class="box"><b>Prueba C · fotogramas sacados de un vídeo de Wan 2.2</b><br><b>A/D</b> andar (sin tocar nada anda solo de un lado a otro)</div>
+<div id="opts" class="box">
+  Clip: <select id="clip"></select>
+  <label>fps <input type="range" id="fps" min="4" max="24" value="12"></label><span id="fpsv">12</span>
+  <label><input type="checkbox" id="all"> ver todos los fotogramas</label>
+</div>
+<script>
+const CLIPS = [["front", "Andar de frente"], ["side", "Andar de perfil"], ["front2", "De frente sin arma"], ["side2", "Perfil sin arma"]];
+const canvas = document.getElementById("c"), ctx = canvas.getContext("2d");
+const sel = document.getElementById("clip");
+let W, H, DPR; function resize() { DPR = Math.min(2, devicePixelRatio || 1); W = innerWidth; H = innerHeight; canvas.width = W * DPR; canvas.height = H * DPR; }
+addEventListener("resize", resize); resize();
+const clips = {};
+for (const [id, label] of CLIPS) {
+  fetch("wan/" + id + ".json").then(r => r.ok ? r.json() : null).then(meta => {
+    if (!meta) return; const img = new Image(); img.src = "wan/" + id + ".png"; clips[id] = {meta, img};
+    const o = document.createElement("option"); o.value = id; o.textContent = label; sel.append(o);
+  }).catch(() => {});
+}
+document.getElementById("fps").oninput = e => document.getElementById("fpsv").textContent = e.target.value;
+const keys = new Set(); let lastInput = -10, time = 0;
+addEventListener("keydown", e => { keys.add(e.code); lastInput = time; }); addEventListener("keyup", e => keys.delete(e.code));
+const hero = {x: 0, facing: 1, frame: 0, moving: false, dir: 1};
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(.05, (now - last) / 1000); last = now; time += dt;
+  const clip = clips[sel.value]; const fps = +document.getElementById("fps").value;
+  let ax = (keys.has("KeyD") ? 1 : 0) - (keys.has("KeyA") ? 1 : 0);
+  if (time - lastInput > 2) { ax = hero.dir; if (hero.x > W * .25) hero.dir = -1; if (hero.x < -W * .25) hero.dir = 1; }
+  hero.moving = ax !== 0; if (ax) hero.facing = ax;
+  hero.x += ax * 110 * dt;
+  if (hero.moving) hero.frame += dt * fps;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const bg = ctx.createLinearGradient(0, 0, 0, H); bg.addColorStop(0, "#2a2233"); bg.addColorStop(.4, "#3d3345"); bg.addColorStop(1, "#1a1520"); ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = "rgba(0,0,0,.25)"; ctx.lineWidth = 2; for (let y = H * .4; y < H; y += 48) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  if (clip && clip.img.complete) {
+    const m = clip.meta, fh = Math.min(260, H * .45), fw = m.frameWidth * fh / m.frameHeight;
+    if (document.getElementById("all").checked) {
+      const per = Math.max(1, Math.floor(W / (fw * .6)));
+      for (let i = 0; i < m.frames; i++) { const cx = (i % per) * fw * .6 + 10, cy = 80 + Math.floor(i / per) * fh * .62; ctx.drawImage(clip.img, i * m.frameWidth, 0, m.frameWidth, m.frameHeight, cx, cy, fw * .55, fh * .55);
+        ctx.fillStyle = "#f5c542"; ctx.font = "12px sans-serif"; ctx.fillText(i, cx + 4, cy + 14); }
+    } else {
+      const f = Math.floor(hero.frame) % m.frames, x = W / 2 + hero.x, y = H * .72;
+      ctx.fillStyle = "rgba(0,0,0,.4)"; ctx.beginPath(); ctx.ellipse(x, y, fw * .28, 12, 0, 0, 7); ctx.fill();
+      ctx.save(); ctx.translate(x, y); ctx.scale(sel.value.startsWith("side") ? hero.facing : 1, 1);
+      ctx.drawImage(clip.img, f * m.frameWidth, 0, m.frameWidth, m.frameHeight, -fw / 2, -fh, fw, fh); ctx.restore();
+      ctx.fillStyle = "#b4a98f"; ctx.font = "13px sans-serif"; ctx.textAlign = "center"; ctx.fillText("fotograma " + (f + 1) + "/" + m.frames, x, y + 30); ctx.textAlign = "left";
+    }
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bestiario</title>
+<style>
+  :root { --bg: #16121c; --card: #221b2b; --line: #3d3148; --text: #efe6d2; --muted: #a99bb5; --gold: #f5c542; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font-family: "Segoe UI", sans-serif; }
+  header { padding: 16px 20px 4px; }
+  h1 { margin: 0 0 4px; font-size: 22px; color: var(--gold); }
+  p.note { margin: 0; color: var(--muted); font-size: 13px; }
+  h2 { font-size: 15px; color: var(--muted); margin: 18px 20px 8px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; padding: 0 20px 20px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .stage { position: relative; height: 220px; background: radial-gradient(ellipse at 50% 90%, #3a2f45 0%, #221b2b 70%); overflow: hidden; }
+  .stage iframe { position: absolute; left: 50%; top: 0; width: 300px; height: 360px; border: 0; transform: translateX(-50%) scale(.61); transform-origin: 50% 0; pointer-events: none; }
+  .stage canvas { width: 100%; height: 100%; display: block; }
+  .name { padding: 7px 10px; font-size: 14px; display: flex; justify-content: space-between; }
+  .name small { color: var(--muted); }
+  .pending { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bestiario · estilo marioneta</h1>
+  <p class="note">Humanoides: marioneta por piezas (andar, atacar, reposo, golpe) mirando a la izquierda, como en el juego. Resto: sprite único animado por código según su tipo.</p>
+</header>
+<h2>Humanoides (marioneta)</h2>
+<div class="grid" id="puppets"></div>
+<h2>Criaturas (sprite animado)</h2>
+<div class="grid" id="singles"></div>
+<script>
+// Keys match MonsterKey in src/data/monsters.ts (snake_case asset folders); names are only for display.
+const PUPPETS = [["goblin", "Goblin"], ["goblin_king", "Rey Goblin Grukk", "jefe"], ["orc", "Orco"], ["skeleton", "Esqueleto"], ["zombie", "Zombi"],
+  ["dark_knight", "Caballero oscuro"], ["succubus", "Súcubo"], ["minotaur", "Minotauro"], ["lich", "Liche"], ["fire_imp", "Diablillo ígneo"],
+  ["void_sovereign", "Soberano del Vacío", "jefe final"]];
+const SINGLES = [["slime", "Limo"], ["rat", "Rata gigante"], ["bat", "Murciélago"], ["mushroom", "Seta tóxica"], ["wolf", "Lobo"], ["ice_wisp", "Fuego fatuo helado"],
+  ["giant_spider", "Araña gigante"], ["harpy", "Arpía"], ["golem", "Gólem"], ["wraith", "Espectro"], ["fire_drake", "Draco ígneo"], ["frost_hydra", "Hidra de escarcha", "jefe"]];
+
+function card(parent, name, tag) {
+  const c = document.createElement("div"); c.className = "card";
+  const st = document.createElement("div"); st.className = "stage"; c.appendChild(st);
+  const n = document.createElement("div"); n.className = "name"; n.innerHTML = name + (tag ? " <small>" + tag + "</small>" : ""); c.appendChild(n);
+  parent.appendChild(c); return st;
+}
+async function exists(url) { try { const r = await fetch(url, {method: "HEAD"}); return r.ok && !(r.headers.get("content-type") || "").includes("html"); } catch (e) { return false; } }
+
+(async () => {
+  for (const [key, name, tag] of PUPPETS) {
+    const st = card(document.getElementById("puppets"), name, tag);
+    if (await exists("puppets/" + key + "/side/rig.json")) {
+      const f = document.createElement("iframe"); f.src = "puppet.html?embed=1&cls=" + key; f.loading = "lazy"; st.appendChild(f);
+    } else { st.innerHTML = '<div class="pending">pendiente de regenerar</div>'; }
+  }
+  for (const [key, name, tag] of SINGLES) {
+    const st = card(document.getElementById("singles"), name, tag);
+    if (await exists("monsters/" + key + ".json")) { startSingle(st, key); }
+    else { st.innerHTML = '<div class="pending">generándose…</div>'; }
+  }
+})();
+
+// ------------------------------------------------------------------ single-sprite animation
+const loadImg = src => new Promise(r => { const i = new Image(); i.onload = () => r(i); i.src = src; });
+function whiteOf(img) { const c = document.createElement("canvas"); c.width = img.width; c.height = img.height; const g = c.getContext("2d"); g.drawImage(img, 0, 0); g.globalCompositeOperation = "source-in"; g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); return c; }
+const ease = k => 1 - Math.pow(1 - k, 3);
+// Loop: walk 1.6 s, attack .9 s, idle 1.0 s, hurt .7 s.
+const PHASES = [["walk", 1.6], ["attack", .9], ["idle", 1.0], ["hurt", .7]];
+
+async function startSingle(stage, key) {
+  const meta = await (await fetch("monsters/" + key + ".json")).json();
+  const img = await loadImg("monsters/" + key + ".png"), white = whiteOf(img);
+  const cv = document.createElement("canvas"); stage.appendChild(cv);
+  const ctx = cv.getContext("2d"); const DPR = Math.min(2, devicePixelRatio || 1);
+  let t0 = performance.now() + Math.random() * 3000;
+  function frame(now) {
+    const W = cv.clientWidth, H = cv.clientHeight; if (cv.width !== W * DPR) { cv.width = W * DPR; cv.height = H * DPR; }
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.clearRect(0, 0, W, H);
+    const total = PHASES.reduce((a, p) => a + p[1], 0); let t = ((now - t0) / 1000) % total, phase = "idle";
+    for (const [p, d] of PHASES) { if (t < d) { phase = p; break; } t -= d; }
+    const time = (now - t0) / 1000;
+    const scale = Math.min(1, (H - 30) / meta.h, (W - 20) / meta.w);
+    const P = pose(meta.anim, phase, t, time);
+    const fx = W * .5, fy = H - 18;
+    // shadow (shrinks when airborne)
+    ctx.fillStyle = "rgba(0,0,0,.35)"; const sh = 1 - Math.min(.5, -P.y / 80);
+    ctx.beginPath(); ctx.ellipse(fx + P.x * .5, fy, meta.w * scale * .36 * sh, 7 * sh, 0, 0, 7); ctx.fill();
+    ctx.save(); ctx.translate(fx + P.x, fy + P.y); ctx.rotate(P.rot); ctx.scale(scale * P.sx, scale * P.sy);
+    ctx.globalAlpha = P.alpha;
+    if (P.glow) { ctx.save(); ctx.globalCompositeOperation = "lighter"; ctx.globalAlpha = P.glow; ctx.filter = "blur(8px)"; ctx.drawImage(img, -meta.footX, -meta.h); ctx.restore(); }
+    ctx.drawImage(img, -meta.footX, -meta.h);
+    if (P.flash > 0) { ctx.globalAlpha = P.flash; ctx.drawImage(white, -meta.footX, -meta.h); }
+    ctx.restore();
+    if (phase === "attack" && t > .25 && t < .5) { // impact spark in front (monsters face left)
+      ctx.save(); ctx.globalCompositeOperation = "lighter"; const k = (t - .25) / .25; ctx.strokeStyle = `rgba(255,236,170,${1 - k})`; ctx.lineWidth = 5;
+      ctx.beginPath(); ctx.arc(fx - meta.w * scale * .55, fy - meta.h * scale * .45, 14 + k * 26, 0, 7); ctx.stroke(); ctx.restore();
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+}
+
+// x/y offsets in px, rotation, squash, alpha, flash, glow — per animation style and phase. Monsters face LEFT: forward = -x.
+function pose(anim, phase, t, time) {
+  const P = {x: 0, y: 0, rot: 0, sx: 1, sy: 1, alpha: 1, flash: 0, glow: 0};
+  const breathe = Math.sin(time * 2.6);
+  if (anim === "blob" || anim === "hop") {
+    P.sy = 1 + breathe * .04; P.sx = 1 - breathe * .04;
+    if (phase === "walk") { const c = (time * 2.2) % 1, air = Math.sin(c * Math.PI); P.y = -air * (anim === "hop" ? 26 : 18);
+      const land = c < .15 ? 1 - c / .15 : c > .9 ? (c - .9) / .1 : 0; P.sy = 1 + air * .12 - land * .18; P.sx = 1 - air * .08 + land * .2; }
+    if (phase === "attack") { const k = t < .25 ? ease(t / .25) : Math.max(0, 1 - (t - .25) / .4); P.x = -k * 38; P.sx = 1 + k * .3; P.sy = 1 - k * .2; P.rot = k * .08; }
+  } else if (anim === "scurry") {
+    P.sy = 1 + breathe * .02;
+    if (phase === "walk") { P.y = -Math.abs(Math.sin(time * 14)) * 5; P.rot = Math.sin(time * 14) * .05; }
+    if (phase === "attack") { const k = t < .18 ? -ease(t / .18) * .4 : t < .35 ? ease((t - .18) / .17) : Math.max(0, 1 - (t - .35) / .4); P.x = -k * 46; P.rot = -k * .12; P.sx = 1 + Math.max(0, k) * .12; }
+  } else if (anim === "flap") {
+    const f = Math.sin(time * 16); P.y = -18 + Math.sin(time * 3) * 8 + f * 3; P.sy = 1 + f * .07; P.sx = 1 - f * .03;
+    if (phase === "walk") { P.x = Math.sin(time * 2) * 10; }
+    if (phase === "attack") { const k = t < .3 ? ease(t / .3) : Math.max(0, 1 - (t - .3) / .45); P.x = -k * 52; P.y += k * 22; P.rot = -k * .35; }
+  } else if (anim === "float") {
+    P.y = -14 + Math.sin(time * 2) * 7; P.rot = Math.sin(time * 1.3) * .04; P.glow = .35 + Math.sin(time * 3) * .15; P.alpha = .92;
+    if (phase === "attack") { const k = t < .3 ? ease(t / .3) : Math.max(0, 1 - (t - .3) / .45); P.x = -k * 50; P.sx = 1 + k * .15; P.glow += k * .4; }
+  } else if (anim === "stomp") {
+    P.sy = 1 + breathe * .02;
+    if (phase === "walk") { const c = (time * 1.5) % 1, step = Math.abs(Math.sin(c * Math.PI * 2)); P.y = -step * 5; P.rot = Math.sin(c * Math.PI * 2) * .03; if (step < .08) { P.sy = .96; P.sx = 1.03; } }
+    if (phase === "attack") { const k = t < .35 ? -ease(t / .35) * .5 : t < .5 ? ease((t - .35) / .15) : Math.max(0, 1 - (t - .5) / .35);
+      P.x = -k * 30; P.rot = -k * .14; P.y = -Math.max(0, -k) * 16; }
+  }
+  if (phase === "hurt") { P.flash = Math.max(0, 1 - t / .3) * .9; P.x += Math.max(0, 1 - t / .4) * 16 * Math.sin(t * 60 > 0 ? 1 : 0); P.rot += Math.max(0, 1 - t / .4) * .1; }
+  return P;
+}
+</script>
+</body>
+</html>

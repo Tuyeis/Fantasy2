@@ -1,0 +1,539 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Marioneta</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0c0a12; overflow: hidden; font-family: "Segoe UI", sans-serif; color: #efe6d2; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  .box { position: fixed; background: rgba(20,16,28,.85); border: 1px solid #6b5a3a; border-radius: 8px; padding: 8px 12px; font-size: 14px; line-height: 1.6; }
+  #help { left: 12px; top: 10px; } #mode { right: 12px; top: 10px; } #opts { left: 12px; bottom: 10px; }
+  .embed .box { display: none; }
+  html.embed, html.embed body { background: transparent; }
+  b { color: #f5c542; } label { margin-right: 12px; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="help" class="box"><b id="clsName">Marioneta</b> (frente, espaldas y perfil)<br><b>WASD</b> andar en 8 direcciones · <b>J</b> atacar · <b>K</b> hechizo · <b>Espacio</b> esquivar · <b>H</b> golpe<br>Sin tocar nada hace una demo.<br>Clase: <select id="clsPick"><option value="novice">Novato</option><option value="swordsman">Espadachín</option><option value="vampire">Vampiro</option><option value="dark_elf">Elfa oscura (arco)</option><option value="knight">Caballero</option><option value="wukong">Wukong</option><option value="mage">Maga</option><option value="cat">Gato</option><option value="elf">Elfa (arco)</option><option value="dark_witch">Bruja oscura</option><option disabled>── monstruos ──</option><option value="goblin">Goblin</option><option value="goblin_king">Rey goblin</option><option value="orc">Orco</option><option value="skeleton">Esqueleto</option><option value="zombie">Zombi</option><option value="dark_knight">Caballero oscuro</option><option value="succubus">Súcubo</option><option value="minotaur">Minotauro</option><option value="lich">Liche</option><option value="fire_imp">Diablillo ígneo</option><option value="void_sovereign">Soberano del Vacío</option></select></div>
+<div id="mode" class="box"></div>
+<div id="opts" class="box"><label><input type="checkbox" id="bones"> ver piezas</label><label><input type="checkbox" id="slow"> cámara lenta</label></div>
+<script>
+const PARAMS = new URLSearchParams(location.search);
+// ?embed=1: bestiary card mode (no UI, side view facing left, walk / attack / idle loop in place).
+const EMBED = PARAMS.get("embed") === "1";
+if (EMBED) { document.documentElement.classList.add("embed"); }
+// Monsters live in puppets/<key>/ like the classes; the selector below lists both.
+const CLS = PARAMS.get("cls") || "novice";
+document.title = "Marioneta · " + CLS; document.getElementById("clsName").textContent = "Marioneta · " + CLS;
+const clsPick = document.getElementById("clsPick"); clsPick.value = CLS; clsPick.addEventListener("change", () => { location.search = "?cls=" + clsPick.value; });
+clsPick.addEventListener("keydown", e => e.stopPropagation());
+const BASE = CLS === "novice" ? "novice_puppet/" : "puppets/" + CLS + "/";
+const canvas = document.getElementById("c"), ctx = canvas.getContext("2d"), modeEl = document.getElementById("mode");
+let W, H, DPR;
+function resize() { DPR = Math.min(2, devicePixelRatio || 1); W = innerWidth; H = innerHeight; canvas.width = W * DPR; canvas.height = H * DPR; }
+addEventListener("resize", resize); resize();
+
+// ------------------------------------------------------------------ assets
+const rigs = {}, weapon = {}, offhand = {};
+function loadImg(src) { return new Promise(res => { const im = new Image(); im.onload = () => res(im); im.src = src; }); }
+function tinted(im, filter) { const c = document.createElement("canvas"); c.width = im.width; c.height = im.height; const g = c.getContext("2d"); g.filter = filter; g.drawImage(im, 0, 0); return c; }
+function silhouette(im) { const c = document.createElement("canvas"); c.width = im.width; c.height = im.height; const g = c.getContext("2d"); g.drawImage(im, 0, 0); g.globalCompositeOperation = "source-in"; g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); return c; }
+let ready = false;
+(async () => {
+  for (const view of ["front", "back", "side"]) {
+    const rig = await (await fetch(BASE + view + "/rig.json")).json();
+    rig.byName = {};
+    for (const p of rig.parts) { p.img = await loadImg(BASE + view + "/" + p.file); p.white = silhouette(p.img); p.dark = tinted(p.img, "brightness(0.86) saturate(0.92)"); rig.byName[p.name] = p; }
+    rigs[view] = rig;
+  }
+  // weapon.json is optional: without it the character fights bare-handed ({type: "none"}).
+  const wres = await fetch(BASE + "weapon.json");
+  Object.assign(weapon, wres.ok && (wres.headers.get("content-type") || "").includes("json") ? await wres.json() : {type: "none"});
+  // Optional off-hand item (a knight's shield).
+  const ores = await fetch(BASE + "offhand.json");
+  if (ores.ok && (ores.headers.get("content-type") || "").includes("json")) {
+    Object.assign(offhand, await ores.json()); offhand.img = await loadImg(BASE + "offhand.png");
+    offhand.white = silhouette(offhand.img); offhand.dark = tinted(offhand.img, "brightness(0.55) saturate(0.7)");
+  }
+  if (weapon.type !== "none") {
+    weapon.img = await loadImg(BASE + "weapon.png"); weapon.white = silhouette(weapon.img); weapon.glow = tinted(weapon.white, "sepia(1) saturate(4) hue-rotate(5deg)");
+  }
+  ready = true;
+})();
+
+// ------------------------------------------------------------------ state
+const keys = new Set(); let lastInput = -10, time = 0;
+addEventListener("keydown", e => { keys.add(e.code); lastInput = time; if (e.code === "Space") e.preventDefault();
+  if (e.code === "KeyJ") act("attack"); if (e.code === "KeyK") act("cast"); if (e.code === "Space") act("dash"); if (e.code === "KeyH") hurt(); });
+addEventListener("keyup", e => keys.delete(e.code));
+const SPRITE_H = 250;
+// Every view gets the same neck-to-feet size (hair, hats or ears must not change the body size).
+const SPRITE_BODY = 148;
+function bodyScale(rig) { return SPRITE_BODY / (rig.bottom - rig.joints.neck[1]); }
+const isBow = () => weapon.type === "bow";
+const isStaff = () => weapon.type === "staff" || weapon.type === "trident";
+const isPole = () => weapon.type === "pole";
+// Magic colour of a staff's bolt per class (keys, not labels).
+const BOLT_COLOR = {mage: "#74c0fc", dark_witch: "#b197fc", lich: "#8ce99a", fire_imp: "#ff922b"};
+const hero = { x: 0, y: 0, view: "front", facing: 1, flip: 1, walk: 0, moving: false, action: null, t: 0, did: false, flash: 0, ghosts: [], dash: {x: 0, y: 1}, dirX: 0, dirY: 1, wAng: 0, wVel: 0, wTrail: [], lastView: "front", blade: null, bladeHist: [], bowDraw: 0 };
+let arrows = [];
+const target = { x: 0, y: 0, flash: 0, knock: 0, squash: 0 };
+let particles = [], floaters = [], slashes = [], orbs = [], rings = [], dust = [], hitstop = 0, shake = 0, flashScreen = 0, stepTimer = 0;
+function place() { hero.x = W * 0.42; hero.y = H * 0.66; target.x = W * 0.42 + Math.min(W * 0.3, 280); target.y = H * 0.66;
+  if (EMBED) { hero.x = W * 0.5; hero.y = H * 0.9; target.x = -9999; } }
+place();
+const rnd = (a, b) => a + Math.random() * (b - a);
+const ease = k => 1 - Math.pow(1 - k, 3);
+function burst(x, y, color, n, speed = 260, life = .6, size = 5) { for (let i = 0; i < n; i++) { const a = Math.random() * 6.283, s = rnd(speed * .3, speed); particles.push({x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 60, life: rnd(life * .5, life), max: life, color, size: rnd(size * .5, size), grav: 500}); } }
+function act(name) { if (hero.action || !ready) return; hero.action = name; hero.t = 0; hero.did = false;
+  if (name === "dash") { const l = Math.hypot(hero.dirX, hero.dirY) || 1; hero.dash = {x: hero.dirX / l, y: hero.dirY / l}; } }
+function hurt() { hero.flash = 1; shake = 10; floaters.push({text: "-12", x: hero.x, y: hero.y - SPRITE_H - 10, life: 1, color: "#ff6b6b", size: 30}); burst(hero.x, hero.y - SPRITE_H * .5, "#ff8787", 14); }
+function hitTarget(amount, color, crit) { target.flash = 1; target.knock = 22; target.squash = 1; hitstop = crit ? .09 : .055; shake = crit ? 12 : 6;
+  floaters.push({text: amount + (crit ? "!" : ""), x: target.x + rnd(-10, 10), y: target.y - 120, life: 1.1, color: crit ? "#ffd43b" : "#fff", size: crit ? 40 : 30, pop: 0}); burst(target.x - 20, target.y - 60, color, crit ? 26 : 16, 340); }
+function setDirection(dx, dy) {
+  if (dx === 0 && dy === 0) return;
+  hero.dirX = dx; hero.dirY = dy;
+  if (Math.abs(dx) > Math.abs(dy) * 0.9) { hero.view = "side"; hero.facing = dx > 0 ? 1 : -1; }
+  else hero.view = dy > 0 ? "front" : "back";
+}
+
+// ------------------------------------------------------------------ poses (radians, + = clockwise on screen)
+function pose() {
+  const v = hero.view, P = { rootX: 0, rootY: 0, torso: 0, torsoSY: 1, head: 0, headY: 0,
+    armL: 0, armR: 0, armLSY: 1, armRSY: 1, legL: {a: 0, lift: 0, sy: 1}, legR: {a: 0, lift: 0, sy: 1}, weapon: 0, farArm: 0, farLeg: 0, weaponFront: false };
+  const s = Math.sin(hero.walk), c = Math.cos(hero.walk);
+  if (v === "side") {
+    P.weapon = isBow() ? 0.08 : -0.95;
+    if (isStaff()) P.weapon = 0.1;       // head up, like a walking stick (absolute angle ~ arm + 0.1)
+    if (isPole()) P.weapon = 0.95;
+    if (hero.moving) {
+      P.rootY = -Math.abs(c) * 7; P.torso = 0.06; P.head = -0.03 + s * 0.02;
+      P.legL = {a: -s * 0.5, lift: Math.max(0, -s) * 5, sy: 1}; P.farLeg = s * 0.5;
+      // The sword arm swings less than the free arm, as when carrying a weapon.
+      P.armL = s * 0.36; P.farArm = -s * 0.55;
+    } else { const b = Math.sin(time * 2.4); P.torsoSY = 1 + b * .015; P.headY = -b * 1.5; P.armL = 0.04 + b * .03; P.farArm = -0.04; }
+  } else {
+    // Seen from behind, a bow hanging straight down reaches the floor: carry it diagonally, lower limb out.
+    P.weapon = isBow() ? (v === "front" ? 0.12 : -1.15) : (v === "front" ? 0.85 : -0.85);
+    if (isStaff()) P.weapon = v === "front" ? 0.06 : -0.06;
+    if (isPole()) P.weapon = v === "front" ? 0.55 : -0.55;
+    if (hero.moving) {
+      // Walking towards / away from the camera: short steps where the moving leg fore-shortens (instead of
+      // marching with high knees), weight shifting over the supporting foot, arms opposite to the legs.
+      const stepL = Math.max(0, s), stepR = Math.max(0, -s);
+      P.rootY = -Math.abs(c) * 3.5 - 1;
+      P.rootX = s * 4;
+      P.legL = {a: s * 0.04, lift: stepL * 5, sy: 1 - stepL * 0.16};
+      P.legR = {a: s * 0.04, lift: stepR * 5, sy: 1 - stepR * 0.16};
+      P.armL = 0.05 + s * 0.08; P.armR = -0.05 + s * 0.08;
+      P.armLSY = 1 - stepR * 0.14; P.armRSY = 1 - stepL * 0.14;
+      P.torso = -s * 0.03; P.head = s * 0.02; P.headY = Math.abs(c) * 1;
+    } else { const b = Math.sin(time * 2.4); P.torsoSY = 1 + b * .015; P.headY = -b * 1.5; P.armL = 0.04 + b * .03; P.armR = -0.04 - b * .03; P.head = Math.sin(time * 1.1) * .025; }
+  }
+  const t = hero.t;
+  // The sword arm: front = image-left arm (character's right), back = image-right arm, side = near arm.
+  const swordArm = v === "back" ? "armR" : "armL";
+  const outward = v === "back" ? -1 : 1;   // + rotation lifts the image-left arm outwards
+  if (hero.action === "attack" && isStaff()) {
+    // Raise the staff and fire a bolt from its head at t = .3.
+    const raise = ease(Math.min(1, t / .22)), rec = t > .42 ? ease(Math.min(1, (t - .42) / .3)) : 0, k2 = raise * (1 - rec);
+    if (v === "side") { P.armL = -1.35 * k2 + P.armL * (1 - k2); P.weapon = (1.25 - P.armL) * k2 + 0.1 * (1 - k2); P.torso = -0.05 * k2; }
+    else { const arm = v === "back" ? "armR" : "armL", out = v === "back" ? -1 : 1;
+      P[arm] = 2.5 * out * k2 + P[arm] * (1 - k2); P.weapon = (-0.15 * out - P[arm]) * k2 + (v === "front" ? 0.06 : -0.06) * (1 - k2); }
+  } else if (hero.action === "attack" && isPole() && v === "side") {
+    // Wukong: arm forward, the pole spins twice in front of the body.
+    const raise = ease(Math.min(1, t / .1)), rec = t > .55 ? ease(Math.min(1, (t - .55) / .2)) : 0, k2 = raise * (1 - rec);
+    P.armL = -1.2 * k2 + P.armL * (1 - k2);
+    P.weapon = 0.95 + Math.min(1, Math.max(0, (t - .08) / .45)) * Math.PI * 4 - P.armL * k2;
+    P.rootX = 12 * k2; P.torso = 0.06 * k2;
+  } else if (hero.action === "attack" && isBow()) {
+    // Bow: raise the bow arm, the other hand pulls the string, release, recover. The bow stays upright (weapon = -arm).
+    const raise = ease(Math.min(1, t / .16)), rec = t > .45 ? ease(Math.min(1, (t - .45) / .3)) : 0;
+    if (v === "side") {
+      P.armL = -1.45 * raise * (1 - rec);
+      const pull = t < .16 ? -1.3 * raise : t < .42 ? -1.3 + 0.75 * ease((t - .16) / .26) : -0.55 + 0.4 * Math.min(1, (t - .42) / .08);
+      P.farArm = pull * (1 - rec);
+      P.weapon = -P.armL + 0.05;
+      P.torso = -0.04 * raise * (1 - rec);
+    } else if (v === "back") {
+      // Archer seen from behind: the bow arm reaches forward (into the picture, so it points up on screen) and the
+      // bow stands upright next to the head; the drawing hand pulls the string back behind the head.
+      const k2 = raise * (1 - rec), draw = hero.bowDraw;
+      P.armR = -2.15 * k2 + P.armR * (1 - k2);
+      P.armRSY = 1 - 0.22 * k2;
+      P.armL = -2.8 * k2 + P.armL * (1 - k2);
+      P.armLSY = 1 - (0.45 + 0.12 * draw) * k2;
+      P.weapon = (-0.18 - P.armR) * k2 - 1.15 * (1 - k2);
+    } else {
+      // Shooting towards / away from the camera (Zelda style): both arms point forward (fore-shortened), the bow
+      // lies horizontal in front of the chest with the string towards the body, the arrow points along the shot.
+      const bowArm = v === "back" ? "armR" : "armL", pullArm = bowArm === "armL" ? "armR" : "armL", inward = v === "back" ? 1 : -1;
+      const k2 = raise * (1 - rec), draw = hero.bowDraw;
+      P[bowArm] = 0.55 * inward * k2 + P[bowArm] * (1 - k2);
+      // Away from the camera the arm points into the picture: stronger fore-shortening, the bow ends up at shoulder height.
+      P[bowArm + "SY"] = 1 - (v === "back" ? 0.72 : 0.5) * k2;
+      P[pullArm] = -0.5 * inward * k2 + P[pullArm] * (1 - k2);
+      P[pullArm + "SY"] = 1 - (v === "back" ? 0.62 + 0.1 * draw : 0.58 + 0.12 * draw) * k2;
+      const idleRel = v === "front" ? 0.12 : -1.15;
+      P.weapon = (-Math.PI / 2 - P[bowArm]) * k2 + idleRel * (1 - k2);
+    }
+  } else if (hero.action === "attack") {
+    let a;
+    if (v === "side") {
+      // Overhead chop: back-up (2.5) -> over the head (pi) -> forward-down (5.2) -> rest (2pi = hanging).
+      if (t < .14) a = ease(t / .14) * 2.5;
+      else if (t < .24) a = 2.5 + ease((t - .14) / .1) * 2.7;
+      else a = 5.2 + ease(Math.min(1, (t - .24) / .32)) * (2 * Math.PI - 5.2);
+    } else {
+      // Front/back: diagonal slash across the body.
+      if (t < .14) a = ease(t / .14) * 2.5;
+      else if (t < .24) a = 2.5 - ease((t - .14) / .1) * 3.6;
+      else a = -1.1 + ease(Math.min(1, (t - .24) / .32)) * 1.1;
+    }
+    // Wrist whip: during the strike the blade leads the hand, then settles.
+    const whip = t > .14 && t < .3 ? Math.sin((t - .14) / .16 * Math.PI) * 0.75 : 0;
+    // Blade relative to the arm: in line during wind-up, leading (whip) at impact, back to guard while recovering.
+    const recover = t > .24 ? ease(Math.min(1, (t - .24) / .32)) : 0;
+    if (v === "side") { P.armL = a; P.weapon = (t < .14 ? 0.3 : 0.5 * (1 - recover) - 0.95 * recover) + whip; P.torso = t < .14 ? -0.1 : t < .32 ? 0.16 : 0.16 * (1 - Math.min(1, (t - .32) / .25)); P.rootX = t < .14 ? -10 : t < .32 ? 34 : 34 * (1 - Math.min(1, (t - .32) / .25)); P.legL = {a: -0.35, lift: 0, sy: 1}; P.farLeg = 0.3; }
+    else if (v === "back") {
+      // Seen from behind the enemy is UP the screen: rising diagonal slash. Wind-up low at the side, sweep behind
+      // the body and finish with the blade above the head; then bring it back down to the guard.
+      let b;
+      if (t < .14) b = -0.55 * ease(t / .14);
+      else if (t < .26) b = -0.55 + ease((t - .14) / .12) * 3.25;
+      else b = 2.7 * (1 - ease(Math.min(1, (t - .3) / .2)) * (t > .3 ? 1 : 0));
+      P.armR = b;
+      P.weapon = t < .14 ? -0.6 : (t < .26 ? whip : -0.85 * recover);
+      P.torso = t < .14 ? 0.05 : -0.08 * (1 - recover);
+      P.rootY = t < .14 ? 3 : -6 * (1 - recover);
+    }
+    else { P[swordArm] = a * outward; P.weapon = ((t < .14 ? 0.1 : 0.7) - whip) * outward; P.torso = (t < .14 ? -0.05 : 0.08) * outward; P.rootY = t < .14 ? -4 : 6 * (1 - Math.min(1, (t - .24) / .3)); P.weaponFront = true; }
+  } else if (hero.action === "cast") {
+    const k = ease(Math.min(1, t / .3)), rel = t > .9 ? Math.min(1, (t - .9) / .15) : 0;
+    if (v === "side") { P.armL = -2.2 * k + 1.6 * rel; P.farArm = -2.0 * k + 1.4 * rel; P.head = -0.08; }
+    else { P.armL = 2.3 * k - 1.5 * rel; P.armR = -2.3 * k + 1.5 * rel; }
+    P.rootY = -10 * k + Math.sin(time * 8) * 1.5;
+  } else if (hero.action === "dash") {
+    P.torso = v === "side" ? 0.3 : 0; P.rootY = -6;
+    if (v === "side") { P.armL = 0.9; P.farArm = 1.0; P.legL = {a: 0.5, lift: 4, sy: 1}; P.farLeg = -0.4; }
+    else { P.armL = 0.5; P.armR = -0.5; P.legL = {a: 0.1, lift: 10, sy: .9}; P.legR = {a: -0.1, lift: 4, sy: .95}; }
+  }
+  // Poses are authored for side art facing RIGHT (+x forward); mirror the signs if the art faces left.
+  if (v === "side" && sideArtFacing() === -1) {
+    for (const key of ["torso", "head", "armL", "farArm", "farLeg", "weapon", "rootX"]) P[key] = -P[key];
+    P.legL = {...P.legL, a: -P.legL.a};
+  }
+  // Arms drawn open (A-pose sheets) are brought back towards hanging straight; weapon angles stay absolute.
+  const rest = restCorrection(rigs[v], v);
+  if (v === "side") { P.armL += rest.l; P.farArm += rest.l; P.weapon -= rest.l; }
+  else { P.armL += rest.l; P.armR += rest.r; P.weapon -= (v === "back" ? rest.r : rest.l); }
+  // Tail (or scarf): lazy sway, livelier when walking, a flick on attacks.
+  P.tail = Math.sin(time * 2.2) * 0.1 + (hero.moving ? Math.sin(hero.walk + 1.2) * 0.22 : 0) + (hero.action === "attack" ? Math.sin(Math.min(1, hero.t / .5) * Math.PI) * 0.35 : 0);
+  return P;
+}
+function restCorrection(rig, v) {
+  if (!rig) return {l: 0, r: 0};
+  if (!rig.rest) {
+    const J = rig.joints, keep = v === "side" ? 0.1 : 0.25;
+    const ang = (sh, hd) => { if (!J[sh] || !J[hd]) return 0; const a = Math.atan2(J[hd][0] - J[sh][0], J[hd][1] - J[sh][1]);
+      return Math.abs(a) <= keep ? 0 : a - Math.sign(a) * keep; };
+    rig.rest = {l: ang("shoulder_l", "hand_l"), r: ang("shoulder_r", "hand_r")};
+  }
+  return rig.rest;
+}
+function sideArtFacing() { return rigs.side && rigs.side.facing ? rigs.side.facing : 1; }
+
+// ------------------------------------------------------------------ drawing
+function drawPartImg(p, useDark) { ctx.drawImage(useDark ? p.dark : p.img, p.x, p.y);
+  if (hero.flash > 0) { ctx.globalAlpha = hero.flash; ctx.drawImage(p.white, p.x, p.y); ctx.globalAlpha = 1; }
+  if (document.getElementById("bones").checked) { ctx.strokeStyle = useDark ? "#0a0" : "#0f0"; ctx.lineWidth = 2; ctx.strokeRect(p.x, p.y, p.img.width, p.img.height); ctx.fillStyle = "#f0f"; ctx.fillRect(p.pivotX - 4, p.pivotY - 4, 8, 8); } }
+function withRot(p, angle, sx, sy, fn) { ctx.save(); ctx.translate(p.pivotX, p.pivotY); ctx.rotate(angle); ctx.scale(sx, sy); ctx.translate(-p.pivotX, -p.pivotY); fn(); ctx.restore(); }
+// The weapon has its own physics: its absolute angle (hero.wAng) follows the hand through a spring,
+// so it lags, overshoots and whips instead of looking glued to the arm.
+function drawWeaponAt(rig, handJoint, armPart, armAngle, armSY = 1) {
+  const hand = rig.joints[handJoint]; if (!hand || !weapon.img) return;
+  const ws = 1.2;
+  // Follow the arm exactly (rotation AND its fore-shortening scale) so the fist never slides on the handle.
+  const place = (angle) => { ctx.translate(armPart.pivotX, armPart.pivotY); ctx.rotate(armAngle); ctx.scale(1, armSY); ctx.translate(hand[0] - armPart.pivotX, hand[1] - armPart.pivotY);
+    ctx.scale(1, 1 / armSY); ctx.rotate(angle - armAngle); ctx.scale(ws, ws); ctx.translate(-weapon.grip[0], -weapon.grip[1]); };
+  ctx.save(); place(hero.wAng);
+  if (isBow()) {
+    // The string must face the archer: back of the body in side view, towards the body centre in front/back views.
+    const desired = hero.view === "side" ? -sideArtFacing() : (hero.view === "front" ? 1 : -1);
+    if (weapon.stringSide !== desired) { ctx.translate(weapon.grip[0], 0); ctx.scale(-1, 1); ctx.translate(-weapon.grip[0], 0); }
+  }
+  ctx.drawImage(weapon.img, 0, 0); if (hero.flash > 0) { ctx.globalAlpha = hero.flash; ctx.drawImage(weapon.white, 0, 0); ctx.globalAlpha = 1; }
+  if (isBow()) drawBowString();
+  // Remember where the blade is (device pixels) for the swoosh ribbon.
+  const m = ctx.getTransform();
+  const tip = m.transformPoint(new DOMPoint(weapon.grip[0], weapon.h * 0.97)), mid = m.transformPoint(new DOMPoint(weapon.grip[0], weapon.h * 0.42));
+  hero.blade = {tip: [tip.x, tip.y], mid: [mid.x, mid.y]};
+  const head = m.transformPoint(new DOMPoint(weapon.grip[0], weapon.tipDown ? weapon.h * 0.97 : 4)); hero.wHead = [head.x / DPR, head.y / DPR];
+  const gp2 = m.transformPoint(new DOMPoint(weapon.grip[0], weapon.grip[1])); hero.wGrip = [gp2.x / DPR, gp2.y / DPR];
+  const gp = m.transformPoint(new DOMPoint(weapon.grip[0], weapon.grip[1])); hero.bowPos = [gp.x / DPR, gp.y / DPR];
+  ctx.restore(); }
+// Off-hand item: centred on the hand, kept roughly upright (it counters most of the arm swing).
+function drawOffhandAt(rig, handJoint, armPart, armAngle, armSY, squashX, useDark) {
+  const hand = rig.joints[handJoint]; if (!hand || !offhand.img) return;
+  ctx.save(); ctx.translate(armPart.pivotX, armPart.pivotY); ctx.rotate(armAngle); ctx.scale(1, armSY); ctx.translate(hand[0] - armPart.pivotX, hand[1] - armPart.pivotY);
+  ctx.scale(1, 1 / armSY); ctx.rotate(-armAngle * 0.8); ctx.scale(squashX * 1.15, 1.15); ctx.translate(-offhand.grip[0], -offhand.grip[1]);
+  ctx.drawImage(useDark ? offhand.dark : offhand.img, 0, 0);
+  if (hero.flash > 0) { ctx.globalAlpha = hero.flash; ctx.drawImage(offhand.white, 0, 0); ctx.globalAlpha = 1; }
+  ctx.restore();
+}
+function drawBowString() {
+  const A = weapon.tipTop, B = weapon.tipBottom, S = weapon.stringSide;
+  const midX = (A[0] + B[0]) / 2, midY = (A[1] + B[1]) / 2;
+  const px = midX + S * hero.bowDraw * weapon.h * 0.3, py = weapon.grip[1];
+  ctx.beginPath(); ctx.moveTo(A[0], A[1]); ctx.lineTo(px, py); ctx.lineTo(B[0], B[1]);
+  ctx.strokeStyle = "rgba(240,240,255,0.95)"; ctx.lineWidth = 1.1; ctx.stroke();
+  if (hero.action === "attack" && hero.t < .42 && hero.t > .1 && hero.view !== "back") {
+    // Nocked arrow: from the string forward past the bow.
+    const tipX = weapon.grip[0] - S * weapon.h * 0.42;
+    ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(tipX, py); ctx.strokeStyle = "#8d6e45"; ctx.lineWidth = 2.2; ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(tipX - S * 7, py); ctx.lineTo(tipX, py - 3.5); ctx.lineTo(tipX, py + 3.5); ctx.closePath(); ctx.fillStyle = "#dee2e6"; ctx.fill();
+    ctx.fillStyle = "#e03131"; ctx.fillRect(Math.min(px, px + S * 8), py - 3, 8, 6);
+  }
+  midY;
+}
+function drawArrows(away) {
+  ctx.save();
+  for (const a of arrows) { if ((a.vy < 0) !== away) { continue; }
+    if (a.bolt) {
+      ctx.save(); ctx.globalCompositeOperation = "lighter";
+      const g = ctx.createRadialGradient(a.x, a.y, 2, a.x, a.y, 26); g.addColorStop(0, "#fff"); g.addColorStop(.35, a.bolt); g.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(a.x, a.y, 26, 0, 7); ctx.fill();
+      ctx.strokeStyle = a.bolt; ctx.globalAlpha = .5; ctx.lineWidth = 10; ctx.lineCap = "round"; ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(a.x - a.vx * .05, a.y - a.vy * .05); ctx.stroke();
+      ctx.restore(); if (Math.random() < .6) particles.push({x: a.x, y: a.y, vx: rnd(-40, 40), vy: rnd(-40, 40), life: .35, max: .35, color: a.bolt, size: 5, grav: 0});
+      continue;
+    }
+    ctx.save(); ctx.translate(a.x, a.y); ctx.rotate(Math.atan2(a.vy, a.vx));
+    ctx.globalCompositeOperation = "lighter"; ctx.strokeStyle = "rgba(255,240,200,0.35)"; ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(-60, 0); ctx.lineTo(0, 0); ctx.stroke();
+    ctx.globalCompositeOperation = "source-over"; ctx.strokeStyle = "#8d6e45"; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(-34, 0); ctx.lineTo(10, 0); ctx.stroke();
+    ctx.fillStyle = "#dee2e6"; ctx.beginPath(); ctx.moveTo(18, 0); ctx.lineTo(8, -5); ctx.lineTo(8, 5); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#e03131"; ctx.fillRect(-36, -4, 10, 8);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+function drawSwoosh() {
+  const h = hero.bladeHist; if (h.length < 3) return;
+  ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalCompositeOperation = "lighter";
+  for (let i = 0; i < h.length - 1; i++) {
+    const a = h[i], b = h[i + 1], fade = (1 - i / (h.length - 1)) * Math.min(1, a.speed / 14);
+    if (fade <= 0.02) continue;
+    ctx.beginPath(); ctx.moveTo(a.tip[0], a.tip[1]); ctx.lineTo(b.tip[0], b.tip[1]); ctx.lineTo(b.mid[0], b.mid[1]); ctx.lineTo(a.mid[0], a.mid[1]); ctx.closePath();
+    const g = ctx.createLinearGradient(a.mid[0], a.mid[1], a.tip[0], a.tip[1]);
+    g.addColorStop(0, `rgba(255,220,140,0)`); g.addColorStop(0.7, `rgba(255,236,170,${0.45 * fade})`); g.addColorStop(1, `rgba(255,255,255,${0.9 * fade})`);
+    ctx.fillStyle = g; ctx.fill();
+  }
+  ctx.restore();
+}
+function weaponTarget() {
+  const P = pose(), arm = hero.view === "back" ? P.armR : P.armL;
+  const sway = hero.moving ? Math.sin(hero.walk * 2 + 0.6) * 0.035 : Math.sin(time * 2.4) * 0.012;
+  return arm + P.weapon + (hero.view === "side" && sideArtFacing() === -1 ? -sway : sway);
+}
+function snapWeapon() { hero.wAng = weaponTarget(); hero.wVel = 0; hero.wTrail = []; hero.bladeHist = []; }
+
+function drawHero() {
+  if (!ready) return;
+  const rig = rigs[hero.view], P = pose(), B = rig.byName;
+  const k = bodyScale(rig);
+  const hipX = rig.joints.hip[0];
+  for (const g of hero.ghosts) { ctx.save(); ctx.globalAlpha = g.life * 1.3; ctx.globalCompositeOperation = "lighter"; ctx.translate(g.x, g.y); ctx.scale(g.flip * (g.rig === rigs.side ? sideArtFacing() : 1) * k, k); ctx.translate(-g.hipX, -g.bottom); ctx.filter = "hue-rotate(180deg)"; for (const p of g.rig.parts) ctx.drawImage(p.white, p.x, p.y); ctx.restore(); }
+  ctx.save(); ctx.fillStyle = "rgba(0,0,0,.4)"; ctx.beginPath(); ctx.ellipse(hero.x, hero.y + 2, 52, 13, 0, 0, 7); ctx.fill(); ctx.restore();
+  if (hero.action === "cast" && hero.t < 1.2) magicCircle(hero.x, hero.y, Math.min(1, hero.t * 3) * (hero.t > .95 ? Math.max(0, 1 - (hero.t - .95) * 4) : 1));
+  ctx.save();
+  // Mirror the side art so that it looks where the hero is going.
+  const flip = hero.view === "side" ? hero.flip * sideArtFacing() : 1;
+  ctx.translate(hero.x, hero.y); ctx.scale(flip * k, k); ctx.translate(-hipX + P.rootX, -rig.bottom + P.rootY);
+  const T = B.torso;
+  const torsoXf = () => { ctx.translate(T.pivotX, T.pivotY); ctx.rotate(P.torso); ctx.scale(1, P.torsoSY); ctx.translate(-T.pivotX, -T.pivotY); };
+  const leg = (p, L, dark) => { ctx.save(); ctx.translate(0, -L.lift); withRot(p, L.a, 1, L.sy, () => drawPartImg(p, dark)); ctx.restore(); };
+  const tail = () => { if (B.tail) { ctx.save(); torsoXf(); withRot(B.tail, P.tail * (hero.view === "back" ? -1 : 1), 1, 1, () => drawPartImg(B.tail)); ctx.restore(); } };
+  if (hero.view !== "back") tail();
+  if (hero.view === "side") {
+    // far limbs (darker copies) behind the body
+    ctx.save(); torsoXf(); withRot(B.arm_l, P.farArm, 1, 1, () => { ctx.translate(-7 * sideArtFacing(), -3); drawPartImg(B.arm_l, true); }); ctx.restore();
+    ctx.save(); ctx.translate(-5 * sideArtFacing(), 0); withRot(B.leg_l, P.farLeg, 1, 1, () => drawPartImg(B.leg_l, true)); ctx.restore();
+    leg(B.leg_l, P.legL, false);
+    ctx.save(); torsoXf(); drawPartImg(T); ctx.restore();
+    ctx.save(); torsoXf(); ctx.translate(0, P.headY); withRot(B.head, P.head, 1, 1, () => drawPartImg(B.head)); ctx.restore();
+    if (offhand.img) { ctx.save(); torsoXf(); ctx.translate(-7 * sideArtFacing() + 14 * sideArtFacing(), -3); drawOffhandAt(rig, "hand_l", B.arm_l, P.farArm, 1, 0.55, false); ctx.restore(); }
+    ctx.save(); torsoXf(); drawWeaponAt(rig, "hand_l", B.arm_l, P.armL); withRot(B.arm_l, P.armL, 1, 1, () => drawPartImg(B.arm_l)); ctx.restore();
+  } else {
+    const swordArm = hero.view === "back" ? "arm_r" : "arm_l", swordAngle = hero.view === "back" ? P.armR : P.armL;
+    const handJ = hero.view === "back" ? "hand_r" : "hand_l";
+    // Seen from behind, a strike goes away from the camera: arm and blade pass behind the whole body.
+    const armsBehindAll = hero.view === "back" && (hero.action === "attack" || hero.action === "cast");
+    const arms = () => { for (const [name, a, sy] of [["arm_l", P.armL, P.armLSY], ["arm_r", P.armR, P.armRSY]]) {
+      // The fist wraps the handle in every view: the weapon is always drawn under the arm.
+      if (name === swordArm) drawWeaponAt(rig, handJ, B[name], a, sy);
+      if (name !== swordArm && hero.view === "back") drawOffhandAt(rig, "hand_" + name.slice(-1), B[name], a, sy, 1, true);
+      withRot(B[name], a, 1, sy, () => drawPartImg(B[name]));
+      if (name !== swordArm && hero.view === "front") drawOffhandAt(rig, "hand_" + name.slice(-1), B[name], a, sy, 1, false); } };
+    // Arms behind the torso normally; in front of it while attacking/casting (front view).
+    const armsInFront = hero.view === "front" && (hero.action === "attack" || hero.action === "cast");
+    if (armsBehindAll) { ctx.save(); torsoXf(); arms(); ctx.restore(); }
+    leg(B.leg_l, P.legL, false); leg(B.leg_r, P.legR, false);
+    if (!armsInFront && !armsBehindAll) { ctx.save(); torsoXf(); arms(); ctx.restore(); }
+    ctx.save(); torsoXf(); drawPartImg(T); ctx.restore();
+    // headTilt: small correction around the neck for heads the generator drew slightly turned.
+    const tilt = (rig.headTilt || 0) * (window.tiltScale ?? 1);
+    ctx.save(); torsoXf(); ctx.translate(0, P.headY); withRot(B.head, P.head + tilt, 1, 1, () => drawPartImg(B.head)); ctx.restore();
+    if (hero.view === "back") tail();
+    if (armsInFront) { ctx.save(); torsoXf(); arms(); ctx.restore(); }
+  }
+  ctx.restore();
+  if (hero.action === "cast" && hero.t < 1) { ctx.save(); ctx.globalCompositeOperation = "lighter"; const gr = ctx.createRadialGradient(hero.x, hero.y - 120, 10, hero.x, hero.y - 120, 170); gr.addColorStop(0, "rgba(151,117,250,.35)"); gr.addColorStop(1, "rgba(151,117,250,0)"); ctx.fillStyle = gr; ctx.fillRect(hero.x - 180, hero.y - 300, 360, 360); ctx.restore(); }
+}
+function magicCircle(x, y, a) { ctx.save(); ctx.translate(x, y); ctx.scale(1, .35); ctx.globalAlpha = a; ctx.globalCompositeOperation = "lighter"; ctx.strokeStyle = "#b197fc"; ctx.lineWidth = 3; ctx.shadowColor = "#9775fa"; ctx.shadowBlur = 16;
+  for (const [r, sp] of [[90, 1], [70, -1.6]]) { ctx.save(); ctx.rotate(time * sp); ctx.beginPath(); ctx.arc(0, 0, r, 0, 6.283); ctx.stroke(); for (let i = 0; i < 6; i++) { const an = i / 6 * 6.283; ctx.beginPath(); ctx.moveTo(Math.cos(an) * r, Math.sin(an) * r); ctx.lineTo(Math.cos(an + 2.1) * r, Math.sin(an + 2.1) * r); ctx.stroke(); } ctx.restore(); } ctx.restore(); }
+function drawTarget() { const x = target.x + target.knock, y = target.y, sq = target.squash; ctx.save(); ctx.fillStyle = "rgba(0,0,0,.4)"; ctx.beginPath(); ctx.ellipse(x, y + 2, 50, 12, 0, 0, 7); ctx.fill(); ctx.restore();
+  ctx.save(); ctx.translate(x, y); ctx.scale(1 + sq * .15 + Math.sin(time * 4) * .03, 1 - sq * .15 - Math.sin(time * 4) * .03); const g = ctx.createRadialGradient(-15, -70, 10, 0, -50, 70); g.addColorStop(0, "#b2f2bb"); g.addColorStop(1, "#2f9e44");
+  ctx.beginPath(); ctx.moveTo(-55, 0); ctx.quadraticCurveTo(-60, -95, 0, -100); ctx.quadraticCurveTo(60, -95, 55, 0); ctx.closePath(); ctx.fillStyle = g; ctx.fill(); ctx.lineWidth = 4; ctx.strokeStyle = "#143d1c"; ctx.stroke();
+  ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.ellipse(-18, -55, 11, 14, 0, 0, 7); ctx.ellipse(18, -55, 11, 14, 0, 0, 7); ctx.fill(); ctx.fillStyle = "#15101c"; ctx.beginPath(); ctx.ellipse(-20, -53, 5, 7, 0, 0, 7); ctx.ellipse(16, -53, 5, 7, 0, 0, 7); ctx.fill();
+  if (target.flash > 0) { ctx.globalAlpha = target.flash * .7; ctx.globalCompositeOperation = "lighter"; ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.moveTo(-55, 0); ctx.quadraticCurveTo(-60, -95, 0, -100); ctx.quadraticCurveTo(60, -95, 55, 0); ctx.fill(); } ctx.restore(); }
+function drawSlash(s) { const k = s.t / .28; ctx.save(); ctx.translate(s.x, s.y); ctx.scale(s.dir, s.vert ? .55 : 1); ctx.rotate(s.rot || 0); ctx.globalCompositeOperation = "lighter"; const st = -1.9, en = st + 2.6 * Math.min(1, k * 2.2);
+  for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.arc(0, 0, 95 - i * 10, st + (en - st) * .15 * i, en); ctx.strokeStyle = i === 0 ? `rgba(255,255,255,${1 - k})` : `rgba(255,236,153,${(1 - k) * .6})`; ctx.lineWidth = (14 - i * 4) * (1 - k * .5); ctx.lineCap = "round"; ctx.shadowColor = "#ffe066"; ctx.shadowBlur = 20; ctx.stroke(); } ctx.restore(); }
+
+// ------------------------------------------------------------------ update
+let demoT = 0, demoStep = 0;
+const DEMO_EMBED = [["walk", -1, 0, 1.6, ""], ["attack", -1, 0, .9, ""], ["idle", -1, 0, 1.0, ""], ["hurt", -1, 0, .7, ""]];
+const DEMO = [["walk", 1, 0, 1.1, "andar → (perfil)"], ["attack", 1, 0, .8, "ataque de perfil"], ["walk", 0, 1, 1.0, "andar ↓ (de frente)"], ["attack", 0, 1, .8, "ataque de frente"],
+  ["walk", -1, 0, 1.1, "andar ← (perfil espejado)"], ["walk", 0, -1, 1.0, "andar ↑ (de espaldas)"], ["attack", 0, -1, .8, "ataque de espaldas"],
+  ["walk", 1, 1, .9, "andar en diagonal"], ["cast", 1, 0, 1.5, "hechizo"], ["dash", 1, 0, .6, "esquiva"], ["idle", 0, 1, 1.4, "reposo"], ["hurt", 0, 1, .9, "recibe golpe"]];
+function update(dt) {
+  time += dt; if (hitstop > 0) { hitstop -= dt; return; }
+  shake = Math.max(0, shake - dt * 40); flashScreen = Math.max(0, flashScreen - dt * 3); hero.flash = Math.max(0, hero.flash - dt * 4); target.flash = Math.max(0, target.flash - dt * 4); target.knock *= Math.pow(.001, dt); target.squash = Math.max(0, target.squash - dt * 3);
+  let ax = 0, ay = 0;
+  if (time - lastInput > 3) {
+    const demo = EMBED ? DEMO_EMBED : DEMO;
+    const [name, dx, dy, dur, label] = demo[demoStep % demo.length];
+    if (demoT === 0) { setDirection(dx, dy); if (name === "attack" || name === "cast" || name === "dash") act(name); if (name === "hurt") hurt(); if (name === "walk" && demoStep % demo.length === 0) place(); }
+    demoT += dt; modeEl.textContent = "Demo: " + label;
+    if (name === "walk") { ax = dx; ay = dy; const l = Math.hypot(ax, ay); ax /= l; ay /= l; }
+    if (demoT >= dur) { demoT = 0; demoStep++; }
+  } else {
+    modeEl.textContent = "Control manual · vista: " + ({front: "frente", back: "espaldas", side: "perfil"})[hero.view];
+    ax = (keys.has("KeyD") ? 1 : 0) - (keys.has("KeyA") ? 1 : 0); ay = (keys.has("KeyS") ? 1 : 0) - (keys.has("KeyW") ? 1 : 0);
+    if (ax && ay) { ax *= .707; ay *= .707; }
+  }
+  if (!hero.action || hero.action === "cast") { if (ax || ay) setDirection(ax, ay); }
+  const speed = hero.action ? (hero.action === "dash" ? 0 : 40) : 200;
+  hero.moving = (ax !== 0 || ay !== 0) && !hero.action;
+  hero.x += ax * speed * dt; hero.y += ay * speed * dt;
+  if (EMBED) { hero.x = W * 0.5; hero.y = H * 0.9; }
+  hero.x = Math.max(90, Math.min(W - 90, hero.x)); hero.y = Math.max(H * .45, Math.min(H - 30, hero.y));
+  if (hero.moving) { hero.walk += dt * 9; stepTimer -= dt; if (stepTimer <= 0) { stepTimer = Math.PI / 9; dust.push({x: hero.x - ax * 20, y: hero.y, vx: -ax * 30, vy: -10, r: 6, life: .45}); } } else hero.walk = 0;
+  hero.flip += (hero.facing - hero.flip) * Math.min(1, dt * 18);
+  // Weapon spring (stiffer and snappier while attacking).
+  if (ready) {
+    if (hero.view !== hero.lastView) { hero.lastView = hero.view; snapWeapon(); }
+    const target = weaponTarget();
+    while (hero.wAng - target > Math.PI) hero.wAng -= 2 * Math.PI;
+    while (target - hero.wAng > Math.PI) hero.wAng += 2 * Math.PI;
+    // A sword is rigid and the wrist holds it firmly: stiff, well-damped spring and a hard limit on how far
+    // the blade may lag behind the hand. The attack whip is authored in the pose, not left to the spring.
+    const attacking = hero.action === "attack";
+    const stiff = attacking ? 900 : 420, damp = attacking ? 52 : 36, maxLag = attacking ? 0.35 : 0.14;
+    hero.wVel += (stiff * (target - hero.wAng) - damp * hero.wVel) * dt;
+    hero.wAng += hero.wVel * dt;
+    if (hero.wAng - target > maxLag) { hero.wAng = target + maxLag; hero.wVel = Math.min(hero.wVel, 0); }
+    if (target - hero.wAng > maxLag) { hero.wAng = target - maxLag; hero.wVel = Math.max(hero.wVel, 0); }
+    hero.wTrail.unshift(hero.wAng); if (hero.wTrail.length > 6) hero.wTrail.length = 6;
+  }
+  if (hero.action) { hero.t += dt; const t = hero.t;
+    const fx = hero.view === "side" ? hero.facing : 0, fy = hero.view === "front" ? 1 : hero.view === "back" ? -1 : 0;
+    if (hero.action === "attack" && isStaff()) {
+      if (t >= .3 && !hero.did) { hero.did = true;
+        const dir = hero.view === "side" ? {x: hero.facing, y: 0} : {x: 0, y: hero.view === "front" ? 1 : -1};
+        const hp = hero.wHead || [hero.x, hero.y - SPRITE_H * .7];
+        arrows.push({x: hp[0], y: hp[1], vx: dir.x * 900, vy: dir.y * 900, life: 1, bolt: BOLT_COLOR[CLS] || "#ffd43b"});
+        burst(hp[0], hp[1], BOLT_COLOR[CLS] || "#ffd43b", 14, 220, .4, 5); }
+      if (t > .8) hero.action = null; }
+    else if (hero.action === "attack" && isBow()) {
+      hero.bowDraw = t < .16 ? 0 : t < .42 ? ease((t - .16) / .26) : Math.max(0, 1 - (t - .42) / .05);
+      if (t >= .42 && !hero.did) { hero.did = true;
+        const dir = hero.view === "side" ? {x: hero.facing, y: 0} : {x: 0, y: hero.view === "front" ? 1 : -1};
+        const bp = hero.bowPos || [hero.x, hero.y - SPRITE_H * .5];
+        arrows.push({x: bp[0] + dir.x * 30, y: bp[1] + dir.y * 30, vx: dir.x * 1300, vy: dir.y * 1300, life: .8}); shake = 3; }
+      if (t > .78) { hero.action = null; hero.bowDraw = 0; } }
+    else if (hero.action === "attack") { if (t >= .2 && !hero.did) { hero.did = true;
+        if (hero.view === "side" && hero.facing === 1 && Math.abs(target.y - hero.y) < 60 && target.x - hero.x < 330 && target.x > hero.x) hitTarget(Math.round(rnd(14, 22)), "#fff3bf", Math.random() < .3); }
+      if (t > (isPole() && hero.view === "side" ? .8 : .6)) hero.action = null; }
+    else if (hero.action === "cast") { if (t < .9 && Math.random() < .8) { const a = Math.random() * 6.283, r = rnd(40, 70); particles.push({x: hero.x + Math.cos(a) * r, y: hero.y - 10 + Math.sin(a) * r * .35, vx: 0, vy: rnd(-120, -60), life: .8, max: .8, color: "#9775fa", size: rnd(3, 6), grav: 0}); }
+      if (t >= .95 && !hero.did) { hero.did = true; orbs.push({x: hero.x + (fx || 1) * 40, y: hero.y - SPRITE_H * .8, tx: target.x, ty: target.y - 70, t: 0}); } if (t > 1.3) hero.action = null; }
+    else if (hero.action === "dash") { hero.x += hero.dash.x * 900 * dt; hero.y += hero.dash.y * 900 * dt; if (Math.floor(t * 60) % 2 === 0) { const r = rigs[hero.view]; hero.ghosts.push({x: hero.x, y: hero.y, flip: hero.view === "side" ? hero.flip : 1, life: .35, rig: r, hipX: r.joints.hip[0], bottom: r.bottom}); } if (t > .2) hero.action = null; } }
+  for (const o of orbs) { o.t += dt * 2.2; const q = Math.min(1, o.t); o.cx = o.x + (o.tx - o.x) * q; o.cy = o.y + (o.ty - o.y) * q - Math.sin(q * 3.14) * 60; particles.push({x: o.cx, y: o.cy, vx: rnd(-30, 30), vy: rnd(-30, 30), life: .4, max: .4, color: "#b197fc", size: 7, grav: 0});
+    if (o.t >= 1 && !o.done) { o.done = true; hitTarget(Math.round(rnd(28, 40)), "#b197fc", false); rings.push({x: o.tx, y: o.ty, t: 0, color: "#b197fc"}); flashScreen = .35; burst(o.tx, o.ty, "#e5dbff", 30, 420, .8, 7); } }
+  for (const a of arrows) { a.x += a.vx * dt; a.y += a.vy * dt; a.life -= dt;
+    if (!a.hit && Math.abs(a.x - target.x) < 45 && Math.abs(a.y - (target.y - 55)) < 60) { a.hit = true; a.life = 0; hitTarget(Math.round(rnd(16, 26)), "#fff3bf", Math.random() < .3); } }
+  arrows = arrows.filter(a => a.life > 0);
+  orbs = orbs.filter(o => !o.done); for (const s of slashes) s.t += dt; slashes = slashes.filter(s => s.t < .28); for (const r of rings) r.t += dt; rings = rings.filter(r => r.t < .6);
+  for (const g of hero.ghosts) g.life -= dt; hero.ghosts = hero.ghosts.filter(g => g.life > 0);
+  for (const p of particles) { p.life -= dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vy += p.grav * dt; p.vx *= Math.pow(.2, dt); } particles = particles.filter(p => p.life > 0);
+  for (const d of dust) { d.life -= dt; d.x += d.vx * dt; d.y += d.vy * dt; d.r += dt * 18; } dust = dust.filter(d => d.life > 0);
+  for (const f of floaters) { f.life -= dt; f.y -= dt * 50; f.pop = (f.pop || 0) + dt; } floaters = floaters.filter(f => f.life > 0);
+}
+function render() {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.save(); if (shake > 0) ctx.translate(rnd(-shake, shake) * .5, rnd(-shake, shake) * .5);
+  if (EMBED) { ctx.clearRect(-20, -20, W + 40, H + 40); } else {
+  const bg = ctx.createLinearGradient(0, 0, 0, H); bg.addColorStop(0, "#2a2233"); bg.addColorStop(.35, "#3d3345"); bg.addColorStop(1, "#1a1520"); ctx.fillStyle = bg; ctx.fillRect(-20, -20, W + 40, H + 40);
+  ctx.strokeStyle = "rgba(0,0,0,.25)"; ctx.lineWidth = 2; for (let y = H * .38; y < H; y += 48) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); } for (let x = 0; x < W; x += 96) { ctx.beginPath(); ctx.moveTo(x, H * .38); ctx.lineTo(x, H); ctx.stroke(); } }
+  if (!EMBED) { ctx.save(); ctx.globalCompositeOperation = "lighter"; const lg = ctx.createRadialGradient(hero.x, hero.y - 60, 20, hero.x, hero.y - 60, 360); lg.addColorStop(0, "rgba(255,190,110,.18)"); lg.addColorStop(1, "rgba(255,190,110,0)"); ctx.fillStyle = lg; ctx.fillRect(0, 0, W, H); ctx.restore(); }
+  for (const d of dust) { ctx.fillStyle = `rgba(200,190,170,${d.life})`; ctx.beginPath(); ctx.arc(d.x, d.y, d.r, 0, 7); ctx.fill(); }
+  const heroDraw = () => { if (hero.view === "back") drawSwoosh(); drawArrows(true); drawHero(); };
+  for (const [, fn] of [[target.y, drawTarget], [hero.y, heroDraw]].sort((a, b) => a[0] - b[0])) fn();
+  // The swoosh only exists during the strike itself.
+  const spinning = isPole() && hero.view === "side" && hero.action === "attack" && hero.t > .1 && hero.t < .55;
+  const striking = !isBow() && !isStaff() && !spinning && hero.action === "attack" && hero.t > .13 && hero.t < .31;
+  if (spinning && hero.wGrip && hero.blade) {
+    // A spinning pole reads as a blurred disc around the hand, not as a ribbon.
+    const r = Math.hypot(hero.blade.tip[0] / DPR - hero.wGrip[0], hero.blade.tip[1] / DPR - hero.wGrip[1]);
+    const fade = Math.sin((hero.t - .1) / .45 * Math.PI);
+    ctx.save(); ctx.globalCompositeOperation = "lighter";
+    ctx.strokeStyle = `rgba(255,200,120,${.28 * fade})`; ctx.lineWidth = 14; ctx.beginPath(); ctx.arc(hero.wGrip[0], hero.wGrip[1], r * .96, 0, 7); ctx.stroke();
+    ctx.strokeStyle = `rgba(255,240,210,${.45 * fade})`; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(hero.wGrip[0], hero.wGrip[1], r, time * 30, time * 30 + 2.2); ctx.stroke();
+    ctx.restore();
+  }
+  if (hero.blade) { hero.bladeHist.unshift({...hero.blade, speed: striking ? Math.abs(hero.wVel) : 0}); if (hero.bladeHist.length > 7) hero.bladeHist.length = 7; }
+  if (hero.view !== "back") drawSwoosh();
+  drawArrows(false);
+  for (const s of slashes) drawSlash(s);
+  for (const r of rings) { ctx.save(); ctx.globalCompositeOperation = "lighter"; ctx.strokeStyle = r.color; ctx.globalAlpha = 1 - r.t / .6; ctx.lineWidth = 8 * (1 - r.t / .6); ctx.beginPath(); ctx.ellipse(r.x, r.y + 40, 30 + r.t * 260, (30 + r.t * 260) * .35, 0, 0, 7); ctx.stroke(); ctx.restore(); }
+  for (const o of orbs) { if (o.cx === undefined) continue; ctx.save(); ctx.globalCompositeOperation = "lighter"; const og = ctx.createRadialGradient(o.cx, o.cy, 2, o.cx, o.cy, 40); og.addColorStop(0, "#fff"); og.addColorStop(.3, "rgba(177,151,252,.9)"); og.addColorStop(1, "rgba(151,117,250,0)"); ctx.fillStyle = og; ctx.beginPath(); ctx.arc(o.cx, o.cy, 40, 0, 7); ctx.fill(); ctx.restore(); }
+  ctx.save(); ctx.globalCompositeOperation = "lighter"; for (const p of particles) { ctx.globalAlpha = Math.min(1, p.life / p.max * 1.5); ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, p.size * (p.life / p.max + .3), 0, 7); ctx.fill(); } ctx.restore();
+  for (const f of floaters) { const pop = Math.min(1, (f.pop || 0) * 8), size = f.size * (.6 + .6 * pop); ctx.save(); ctx.globalAlpha = Math.min(1, f.life * 2); ctx.font = `800 ${size}px 'Segoe UI', sans-serif`; ctx.textAlign = "center"; ctx.lineWidth = 6; ctx.strokeStyle = "rgba(0,0,0,.8)"; ctx.strokeText(f.text, f.x, f.y); ctx.fillStyle = f.color; ctx.fillText(f.text, f.x, f.y); ctx.restore(); }
+  ctx.restore(); if (flashScreen > 0) { ctx.fillStyle = `rgba(230,220,255,${flashScreen * .5})`; ctx.fillRect(0, 0, W, H); }
+}
+let last = performance.now();
+function loop(now) { const slow = document.getElementById("slow").checked ? .25 : 1; const dt = Math.min(.05, (now - last) / 1000) * slow; last = now; update(dt); render(); requestAnimationFrame(loop); }
+window.snapWeapon = snapWeapon;
+// Debug: render an action for several views into one sheet and post it to the local receiver.
+window.poseSheet = async (name, action = "attack", times = [0, .1, .16, .22, .3, .42, .5, .7], dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]]) => {
+  const cw = 300, ch = 330, sheet = document.createElement("canvas"); sheet.width = cw * times.length; sheet.height = ch * dirs.length;
+  const g = sheet.getContext("2d"); g.fillStyle = "#3d3345"; g.fillRect(0, 0, sheet.width, sheet.height);
+  lastInput = time + 1e6; place(); target.x = -9999;
+  for (let r = 0; r < dirs.length; r++) {
+    hero.action = null; setDirection(dirs[r][0], dirs[r][1]); hero.flip = hero.facing; hero.walk = 0; arrows = [];
+    for (let i = 0; i < 30; i++) { update(1 / 60); render(); } snapWeapon(); hero.bladeHist = [];
+    if (action === "walk") { keys.clear(); if (dirs[r][0]) { keys.add(dirs[r][0] > 0 ? "KeyD" : "KeyA"); } if (dirs[r][1]) { keys.add(dirs[r][1] > 0 ? "KeyS" : "KeyW"); } } else { act(action); }
+    let tt = 0;
+    for (let c = 0; c < times.length; c++) {
+      while (tt < times[c] - 1e-6) { update(1 / 60); if (action === "walk") { hero.x = W * 0.42; hero.y = H * 0.66; } render(); tt += 1 / 60; }
+      render();
+      g.drawImage(canvas, (hero.x - cw / 2) * DPR, (hero.y - ch + 40) * DPR, cw * DPR, ch * DPR, c * cw, r * ch, cw, ch);
+    }
+  }
+  keys.clear();
+  await fetch("http://127.0.0.1:5199/save?name=" + name, {method: "POST", body: sheet.toDataURL("image/png")});
+  lastInput = -10; return "saved " + name;
+};
+window.stepN = n => { for (let i = 0; i < n; i++) update(1 / 60); render(); };
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
