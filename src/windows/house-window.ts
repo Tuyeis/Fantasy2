@@ -6,7 +6,7 @@ import {button, el, ToastKind, WindowHandle} from "../core/ui";
 import {ALL_PERKS, PerkDef, PerkKey, PERKS} from "../data/perks";
 import {perkRank} from "../logic/hero-stats";
 import {canLearnPerk, learnPerk} from "../logic/progression";
-import {npcLine, sectionTitle, tabBar, tag} from "./window-helpers";
+import {fail, npcLine, rerender, sectionTitle, tabBar, tag} from "./window-helpers";
 
 enum HouseTab {
     Feats = "feats",
@@ -45,8 +45,7 @@ export function openHouse(game: Game, onChange: () => void): void {
                             onChange();
                             render();
                         } else {
-                            game.audio.play(Sfx.Error);
-                            game.ui.toast(t("notEnoughPoints"), ToastKind.Bad);
+                            fail(game, t("notEnoughPoints"));
                         }
                     }, {cls: "btn-small btn-primary", disabled: !canLearnPerk(save, key)})
                 ])
@@ -84,9 +83,7 @@ export function openHouse(game: Game, onChange: () => void): void {
             tab = next;
             render();
         });
-        const scrollTop: number = win.body.scrollTop;
-        win.body.replaceChildren(npcLine(t("houseGreeting")), tabs, ...(tab === HouseTab.Feats ? renderFeats() : renderRecords()));
-        win.body.scrollTop = scrollTop;
+        rerender(win, npcLine(t("houseGreeting")), tabs, ...(tab === HouseTab.Feats ? renderFeats() : renderRecords()));
         win.footer.replaceChildren(button(t("restAndSave"), () => {
             game.saveGame();
             game.audio.play(Sfx.Heal);

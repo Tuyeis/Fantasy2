@@ -5,29 +5,26 @@ import {SaveData} from "../core/save-store";
 import {button, el, ToastKind, WindowHandle} from "../core/ui";
 import {AbilityDef, AbilityKey, ABILITIES, describeAbility} from "../data/abilities";
 import {ClassDef, ClassKey, CLASSES} from "../data/hero-classes";
-import {ItemKey} from "../data/items";
+import {ItemKey, ITEMS} from "../data/items";
 import {ALL_STATS, StatKey, statLabel} from "../data/stat-block";
-import {bagHasRoomFor} from "../logic/bank";
-import {buyPrice, buyWithDiamonds, buyWithGold} from "../logic/economy";
+import {buyPrice, Currency} from "../logic/economy";
 import {countItem, itemName} from "../logic/inventory";
 import {describeItemSources} from "../logic/item-sources";
-import {missingForClass, switchClass, transformClass} from "../logic/progression";
+import {canTransform, missingForClass, transformClass} from "../logic/progression";
 import {abilityIconEl} from "../render/ability-icons";
 import {drawClassHero} from "../render/class-hero";
 import {playClassTransformation} from "../render/class-transform-fx";
 import {defaultPose} from "../render/hero-sprite";
 import {iconImg} from "../render/item-icons";
-import {diamondText, goldText, itemRow, npcLine, sectionTitle, tag} from "./window-helpers";
+import {buyButton, diamondText, fail, goldText, itemRow, npcLine, rerender, sectionTitle, tag, walletLine} from "./window-helpers";
 
 export function classPortrait(classKey: ClassKey, size: number = 72): HTMLCanvasElement {
     const canvas: HTMLCanvasElement = document.createElement("canvas");
+    canvas.className = "class-portrait";
     canvas.width = size * 2;
     canvas.height = size * 2;
     canvas.style.width = size + "px";
     canvas.style.height = size + "px";
-    canvas.style.flex = "none";
-    canvas.style.background = "radial-gradient(circle at 50% 60%, rgba(245,197,66,0.18), rgba(0,0,0,0.25))";
-    canvas.style.borderRadius = "8px";
     const ctx: CanvasRenderingContext2D = canvas.getContext("2d") as CanvasRenderingContext2D;
     ctx.scale(2, 2);
     drawClassHero(ctx, size / 2, size - 8, classKey, defaultPose({scale: size / 62}));
@@ -39,34 +36,11 @@ export function openClassLibrary(game: Game, onChange: () => void): void {
     const win: WindowHandle = game.ui.openWindow({title: t("classLibrary"), cls: "window-wide"});
 
     const render: () => void = () => {
-        const tomePrice: number = buyPrice(save, ItemKey.ClassTome);
         const tomeRow: HTMLElement = itemRow(ItemKey.ClassTome, itemName(ItemKey.ClassTome) + " ×" + countItem(save, ItemKey.ClassTome), t("buyTome"), [
-            goldText(tomePrice),
-            button(t("buy"), () => {
-                if (!bagHasRoomFor(save, ItemKey.ClassTome)) {
-                    game.audio.play(Sfx.Error);
-                    game.ui.toast(t("bagFull"), ToastKind.Bad);
-                } else if (buyWithGold(save, ItemKey.ClassTome)) {
-                    game.audio.play(Sfx.Buy);
-                    changed();
-                } else {
-                    game.audio.play(Sfx.Error);
-                    game.ui.toast(t("notEnoughGold"), ToastKind.Bad);
-                }
-            }, {cls: "btn-small btn-primary", disabled: save.hero.gold < tomePrice}),
-            diamondText(3),
-            button(t("buy"), () => {
-                if (!bagHasRoomFor(save, ItemKey.ClassTome)) {
-                    game.audio.play(Sfx.Error);
-                    game.ui.toast(t("bagFull"), ToastKind.Bad);
-                } else if (buyWithDiamonds(save, ItemKey.ClassTome)) {
-                    game.audio.play(Sfx.Buy);
-                    changed();
-                } else {
-                    game.audio.play(Sfx.Error);
-                    game.ui.toast(t("notEnoughDiamonds"), ToastKind.Bad);
-                }
-            }, {cls: "btn-small", disabled: save.hero.diamonds < 3})
+            goldText(buyPrice(save, ItemKey.ClassTome)),
+            buyButton(game, ItemKey.ClassTome, Currency.Gold, changed),
+            diamondText(ITEMS[ItemKey.ClassTome].diamondPrice ?? 0),
+            buyButton(game, ItemKey.ClassTome, Currency.Diamonds, changed)
         ]);
 
         const rows: HTMLElement[] = (Object.values(CLASSES) as ClassDef[]).map((def: ClassDef) => {
@@ -94,15 +68,9 @@ export function openClassLibrary(game: Game, onChange: () => void): void {
             let action: HTMLElement;
             if (current) {
                 action = tag(t("currentClass"), "good");
-            } else if (unlocked) {
-                action = button(t("switchTo"), () => {
-                    const from: ClassKey = save.hero.classKey;
-                    if (switchClass(save, def.key)) {
-                        game.audio.play(Sfx.Unlock);
-                        changed();
-                        playClassTransformation(from, def.key, t("classSwitchBanner"), tr(def.name), def.look.accent);
-                    }
-                }, {cls: "btn-small btn-primary"});
+            } else if (!canTransform(save)) {
+                // One class per game: after leaving the Novice behind there is no switching.
+                action = el("span", {cls: "muted", style: {fontSize: "12px", maxWidth: "120px", display: "inline-block"}, text: save.hero.classKey === ClassKey.Novice ? t("classLockedForRun") : t("classForLife")});
             } else {
                 action = button(t("transform"), () => {
                     const from: ClassKey = save.hero.classKey;
@@ -113,13 +81,12 @@ export function openClassLibrary(game: Game, onChange: () => void): void {
                             game.ui.toast(t("classChanged", {cls: tr(def.name)}), ToastKind.Special);
                         });
                     } else {
-                        game.audio.play(Sfx.Error);
-                        game.ui.toast(t("missingRecipe", {items: missing.map((k: ItemKey) => itemName(k)).join(", ")}), ToastKind.Bad);
+                        fail(game, t("missingRecipe", {items: missing.map((k: ItemKey) => itemName(k)).join(", ")}));
                     }
                 }, {cls: "btn-small btn-primary", disabled: missing.length > 0});
             }
             // Guidance for locked classes: the three steps and where each missing ingredient can be found.
-            const guide: HTMLElement | null = unlocked || def.recipe.length === 0 ? null : el("div", {cls: "row-sub", style: {marginTop: "6px", padding: "6px 8px", borderRadius: "6px", background: "rgba(245,197,66,0.08)"}}, [
+            const guide: HTMLElement | null = unlocked || def.recipe.length === 0 || !canTransform(save) ? null : el("div", {cls: "row-sub", style: {marginTop: "6px", padding: "6px 8px", borderRadius: "6px", background: "rgba(245,197,66,0.08)"}}, [
                 el("b", {text: t("howToBecome")}),
                 el("div", {text: t("howToSteps")}),
                 ...missing.map((item: ItemKey) => el("div", {}, ["• " + itemName(item) + " — " + t("whereToFind") + ": ", el("i", {text: describeItemSources(item)})]))
@@ -137,12 +104,7 @@ export function openClassLibrary(game: Game, onChange: () => void): void {
                 el("div", {cls: "row-actions"}, [action])
             ]);
         });
-        const scrollTop: number = win.body.scrollTop;
-        win.body.replaceChildren(npcLine(t("classGreeting")), el("div", {cls: "hud-line", style: {marginBottom: "8px"}}, [
-            el("span", {}, [t("gold") + ": ", el("b", {text: String(save.hero.gold)})]),
-            el("span", {}, [t("diamonds") + ": ", el("b", {text: String(save.hero.diamonds)})])
-        ]), tomeRow, sectionTitle(t("classLabel")), el("div", {cls: "list"}, rows));
-        win.body.scrollTop = scrollTop;
+        rerender(win, npcLine(t("classGreeting")), walletLine(save), ...(canTransform(save) ? [tomeRow] : []), sectionTitle(t("classLabel")), el("div", {cls: "list"}, rows));
     };
     const changed: () => void = () => {
         game.saveGame();

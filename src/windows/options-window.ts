@@ -12,7 +12,13 @@ const LANG_NAMES: Record<Lang, string> = {
 type VolumeKey = "master" | "music" | "sfx";
 
 export function openOptions(game: Game): void {
-    const win: WindowHandle = game.ui.openWindow({title: t("options"), cls: "window-small"});
+    // Refresh the fullscreen label however fullscreen changes (button, Esc, F11...).
+    const onFullscreenChange: () => void = () => render();
+    const win: WindowHandle = game.ui.openWindow({
+        title: t("options"),
+        cls: "window-small",
+        onClose: () => document.removeEventListener("fullscreenchange", onFullscreenChange)
+    });
     const render: () => void = () => {
         win.setTitle(t("options"));
         const langRow: HTMLElement = el("div", {cls: "option-row"}, [
@@ -43,10 +49,7 @@ export function openOptions(game: Game): void {
         };
         const fullscreenRow: HTMLElement = el("div", {cls: "option-row"}, [
             el("label", {text: t("fullscreen")}),
-            button(document.fullscreenElement ? t("on") : t("off"), () => {
-                game.toggleFullscreen();
-                window.setTimeout(render, 250);
-            }, {cls: "btn-small"})
+            button(document.fullscreenElement ? t("on") : t("off"), () => game.toggleFullscreen(), {cls: "btn-small"})
         ]);
         win.body.replaceChildren(
             langRow,
@@ -57,5 +60,6 @@ export function openOptions(game: Game): void {
         );
         win.footer.replaceChildren(button(t("close"), () => win.close(), {cls: "btn-primary"}));
     };
+    document.addEventListener("fullscreenchange", onFullscreenChange);
     render();
 }

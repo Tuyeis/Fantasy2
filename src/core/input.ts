@@ -13,17 +13,15 @@ export class Input {
     private readonly down: Set<string> = new Set<string>();
     private readonly pressed: Set<string> = new Set<string>();
     private leftDown: boolean = false;
-    private rightDown: boolean = false;
     private leftClicked: boolean = false;
     private rightClicked: boolean = false;
 
-    constructor(private readonly canvas: HTMLCanvasElement) {
+    constructor(canvas: HTMLCanvasElement) {
         window.addEventListener("keydown", (e: KeyboardEvent) => this.onKeyDown(e));
         window.addEventListener("keyup", (e: KeyboardEvent) => this.down.delete(e.code));
         window.addEventListener("blur", () => {
             this.down.clear();
             this.leftDown = false;
-            this.rightDown = false;
         });
         canvas.addEventListener("wheel", (e: WheelEvent) => {
             e.preventDefault();
@@ -40,15 +38,12 @@ export class Input {
                 this.leftDown = true;
                 this.leftClicked = true;
             } else if (e.button === 2) {
-                this.rightDown = true;
                 this.rightClicked = true;
             }
         });
         window.addEventListener("mouseup", (e: MouseEvent) => {
             if (e.button === 0) {
                 this.leftDown = false;
-            } else if (e.button === 2) {
-                this.rightDown = false;
             }
         });
         canvas.addEventListener("contextmenu", (e: MouseEvent) => e.preventDefault());
@@ -79,10 +74,6 @@ export class Input {
 
     public get mouseLeftDown(): boolean {
         return this.leftDown;
-    }
-
-    public get mouseRightDown(): boolean {
-        return this.rightDown;
     }
 
     public get mouseLeftClicked(): boolean {
@@ -127,9 +118,5 @@ export class Input {
         this.wheel = 0;
         this.leftClicked = false;
         this.rightClicked = false;
-    }
-
-    public get element(): HTMLCanvasElement {
-        return this.canvas;
     }
 }

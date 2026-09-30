@@ -1,15 +1,14 @@
 import {MusicTrack, Sfx} from "../core/audio-engine";
 import {Game, Scene} from "../core/game";
 import {t, tr} from "../core/i18n";
-import {Input} from "../core/input";
-import {chance} from "../core/rng";
+import {Input, Vec2} from "../core/input";
+import {chance, clamp} from "../core/rng";
 import {SaveData} from "../core/save-store";
 import {button, el, ToastKind, WindowHandle} from "../core/ui";
 import {BuildingKey, BUILDINGS} from "../data/buildings";
 import {CompanionKey} from "../data/companions";
 import {Direction, DropData, DungeonEventKey, MonsterSpawn, RoomData, RoomType, RunData} from "../data/dungeon-types";
 import {FloorDef, floorDef, LAST_FLOOR} from "../data/floors";
-import {EarStyle, HatStyle, TailStyle, WeaponStyle} from "../data/hero-classes";
 import {ItemKey} from "../data/items";
 import {MonsterDef, MONSTERS} from "../data/monsters";
 import {StatBlock} from "../data/stat-block";
@@ -20,28 +19,33 @@ import {computeHeroStats} from "../logic/hero-stats";
 import {bagHasRoomFor} from "../logic/bank";
 import {addItem, itemName} from "../logic/inventory";
 import {chestLoot, combatLoot, combatXp, LootResult} from "../logic/loot";
-import {grantXp, nextLockedBuilding, registerBossKill, unlockBuilding} from "../logic/progression";
+import {grantXp, nextLockedBuilding, registerBossKill, unlockBuilding, XpGain} from "../logic/progression";
 import {currentRoom, endRunDefeat, endRunReturn, enterFloor, moveThroughDoor} from "../logic/run-manager";
-import {drawClassHero} from "../render/class-hero";
-import {DungeonProp, drawProp, propArt, roomFloor} from "../render/dungeon-art";
-import {drawText, ellipsePath, fillStroke, glow, hash, rectPath, shade} from "../render/draw-utils";
+import {drawClassHero, heroWeaponType} from "../render/class-hero";
+import {SpellFxLayer} from "../render/spell-fx";
+import {WeaponType} from "../render/puppet/puppet-types";
+import {DungeonProp, drawProp, roomFloor} from "../render/dungeon-art";
+import {drawText, ellipsePath, glow, hash, rectPath, shade} from "../render/draw-utils";
+import {FloaterLayer} from "../render/floater-layer";
 import {defaultPose, drawHero} from "../render/hero-sprite";
 import {defaultMonsterPose, drawCompanion, drawMonster} from "../render/monster-sprite";
-import {drawCampfire, drawChest, drawCoins, drawLootBag, drawPedestal, drawShrine, drawSignpost, drawSpikes, drawStairs} from "../render/props";
-import {openCharacter} from "../windows/character-window";
-import {openInventory} from "../windows/inventory-window";
-import {openOptions} from "../windows/options-window";
-import {openPause} from "../windows/pause-window";
+import {drawCoins, drawLootBag, drawSignpost} from "../render/props";
+import {usePotionOutsideCombat} from "../windows/inventory-window";
+import {syncActionBar} from "../logic/action-bar";
+import {ActionBarSlot} from "../data/action-bar";
+import {pressedSlot} from "./action-bar-hud";
 import {CombatScene, CombatSummary} from "./combat-scene";
 import {DuelScene} from "./duel-scene";
 import {EventResult, resolveEvent, roomCompanion} from "./dungeon-events";
 import {MainMenuScene} from "./main-menu-scene";
 import {TownMessage, TownScene, TownSpawn} from "./town-scene";
 import {VictoryScene} from "./victory-scene";
-import {buildHeroHud, buildHudButtons, Camera, HeroWalker} from "./world-helpers";
+import {
+    announceLevelUp, buildHeroHud, buildWorldHud, Camera, handleWorldHotkeys, HeroWalker, nearestWithin, openWorldPause, WorldHud, WorldScene
+} from "./world-helpers";
 
-export const ROOM_TILES_W: number = 17;
-export const ROOM_TILES_H: number = 11;
+const ROOM_TILES_W: number = 17;
+const ROOM_TILES_H: number = 11;
 const T: number = 32;
 const ROOM_W: number = ROOM_TILES_W * T;
 const ROOM_H: number = ROOM_TILES_H * T;
@@ -56,9 +60,16 @@ enum Interactable {
     Fire = "fire",
     Event = "event",
     Stairs = "stairs",
-    Sign0 = "sign0",
-    Sign1 = "sign1",
-    Sign2 = "sign2"
+    Sign = "sign"
+}
+
+/** Something the hero can use, and where it stands. */
+interface InteractableSpot {
+    kind: Interactable;
+    x: number;
+    y: number;
+    /** Which crossroads sign (Interactable.Sign); 0 for everything else. */
+    index: number;
 }
 
 interface MonsterEntity {
@@ -70,17 +81,9 @@ interface MonsterEntity {
     walk?: number;
 }
 
-interface FloatingText {
-    text: string;
-    x: number;
-    y: number;
-    life: number;
-    color: string;
-}
-
 const SIGN_POSITIONS: [number, number][] = [[5 * T, 5.4 * T], [CENTER_X, 4.4 * T], [12 * T, 5.4 * T]];
 
-export function effectiveType(room: RoomData): RoomType {
+function effectiveType(room: RoomData): RoomType {
     if (room.type === RoomType.Crossroads) {
         return room.chosen ?? RoomType.Crossroads;
     }
@@ -116,15 +119,23 @@ export class DungeonScene implements Scene {
     private background: HTMLCanvasElement | null = null;
     private time: number = 0;
     private fade: number = 1;
-    private hudEl: HTMLElement | null = null;
-    private hintEl: HTMLElement | null = null;
-    private currentHint: string = "";
-    private near: Interactable | null = null;
-    private floating: FloatingText[] = [];
+    private hud: WorldHud | null = null;
+    private readonly world: WorldScene = {
+        inDungeon: true,
+        onChange: () => this.markHud(),
+        onUseSlot: (index: number) => this.useSlot(index),
+        onAbandon: () => this.defeat(true),
+        onQuitToMenu: () => this.game.setScene(new MainMenuScene(this.game))
+    };
+    private near: InteractableSpot | null = null;
+    private readonly floating: FloaterLayer = new FloaterLayer({riseSpeed: 30, size: 13});
     private trail: {x: number; y: number}[] = [];
     private busy: boolean = false;
     private initialized: boolean = false;
     private hudDirty: boolean = true;
+    /** Attack gesture while exploring (1 → 0). */
+    private swing: number = 0;
+    private readonly spells: SpellFxLayer = new SpellFxLayer();
 
     constructor(private readonly game: Game) {
     }
@@ -165,36 +176,15 @@ export class DungeonScene implements Scene {
     }
 
     public onEscape(): void {
-        openPause(this.game, {
-            inDungeon: true,
-            onInventory: () => this.openInventory(),
-            onCharacter: () => openCharacter(this.game, {onChange: () => this.markHud()}),
-            onAbandon: () => this.defeat(true),
-            onQuitToMenu: () => this.game.setScene(new MainMenuScene(this.game))
-        });
-    }
-
-    private openInventory(): void {
-        openInventory(this.game, {inDungeon: true, onChange: () => this.markHud()});
+        openWorldPause(this.game, this.world);
     }
 
     private fitZoom(): number {
-        return Math.max(0.9, Math.min((this.game.width - 40) / ROOM_W, (this.game.height - 60) / ROOM_H, 2.4));
+        return clamp(Math.min((this.game.width - 40) / ROOM_W, (this.game.height - 60) / ROOM_H), 0.9, 2.4);
     }
 
     private buildHud(): void {
-        this.game.ui.clearHud();
-        this.hudEl = el("div", {cls: "hud-top"});
-        this.game.ui.hud.append(this.hudEl);
-        this.game.ui.hud.append(buildHudButtons({
-            onInventory: () => this.openInventory(),
-            onCharacter: () => openCharacter(this.game, {onChange: () => this.markHud()}),
-            onOptions: () => openOptions(this.game),
-            onPause: () => this.onEscape()
-        }));
-        this.hintEl = el("div", {cls: "hud-hint"});
-        this.currentHint = "";
-        this.game.ui.hud.append(this.hintEl);
+        this.hud = buildWorldHud(this.game, this.world);
         this.markHud();
     }
 
@@ -203,8 +193,11 @@ export class DungeonScene implements Scene {
     }
 
     private refreshHud(): void {
-        if (this.hudEl && this.save.run) {
-            this.hudEl.replaceChildren(buildHeroHud(this.save));
+        if (this.hud) {
+            if (this.save.run) {
+                this.hud.top.replaceChildren(buildHeroHud(this.save));
+            }
+            this.hud.actionBar.refresh();
         }
         this.hudDirty = false;
     }
@@ -216,7 +209,7 @@ export class DungeonScene implements Scene {
         const firstVisit: boolean = !room.visited;
         room.visited = true;
         this.fade = 1;
-        this.floating = [];
+        this.floating.clear();
         this.placeHero();
         this.trail = [];
 
@@ -303,14 +296,13 @@ export class DungeonScene implements Scene {
         this.busy = true;
         const spawn: MonsterSpawn = this.monster.spawn;
         const def: MonsterDef = MONSTERS[spawn.key];
-        const isBoss: boolean = def.boss;
         const onEnd: (summary: CombatSummary) => void = (summary: CombatSummary) => this.onCombatEnd(summary);
         const profile: EncounterProfile = encounterProfile(def);
         let chosen: boolean = false;
         const start: (mode: CombatMode) => void = (mode: CombatMode): void => {
             chosen = true;
             win.close();
-            this.game.setScene(mode === CombatMode.RealTime ? new DuelScene(this.game, spawn, isBoss, onEnd) : new CombatScene(this.game, spawn, isBoss, onEnd));
+            this.game.setScene(mode === CombatMode.RealTime ? new DuelScene(this.game, spawn, onEnd) : new CombatScene(this.game, spawn, onEnd));
         };
         const win: WindowHandle = this.game.ui.openWindow({title: tr(def.name), cls: "window-small", onClose: () => {
             if (!chosen) {
@@ -370,8 +362,8 @@ export class DungeonScene implements Scene {
         const def: MonsterDef = MONSTERS[spawn.key];
         const fd: FloorDef = floorDef(run.floor);
         const bonus: number = 1 + (summary.rewardBonus ?? 0);
-        const xp: number = grantXp(save, Math.round(combatXp(def, spawn.armored, save.challenge) * bonus));
-        run.xpEarned += xp;
+        const gain: XpGain = grantXp(save, Math.round(combatXp(def, spawn.armored, save.challenge) * bonus));
+        run.xpEarned += gain.xp;
         run.kills++;
         save.records.kills++;
         if (spawn.armored) {
@@ -382,7 +374,6 @@ export class DungeonScene implements Scene {
         if (def.boss) {
             const firstKill: boolean = registerBossKill(save, def.key);
             save.hero.diamonds += def.diamonds;
-            run.bossDefeated = true;
             loot = combatLoot(save, def, false, fd);
             this.game.ui.toast(t("featPointGained"), ToastKind.Special);
             this.game.ui.toast(t("diamondsGained", {n: def.diamonds}), ToastKind.Special);
@@ -410,7 +401,8 @@ export class DungeonScene implements Scene {
             this.spawnDrops(loot, monsterPos.x, monsterPos.y);
         }
         this.game.setScene(this);
-        this.game.ui.toast(loot ? t("victoryRewards", {xp: xp, gold: loot.gold}) : t("victoryXpOnly", {xp: xp}), ToastKind.Good);
+        this.game.ui.toast(loot ? t("victoryRewards", {xp: gain.xp, gold: loot.gold}) : t("victoryXpOnly", {xp: gain.xp}), ToastKind.Good);
+        announceLevelUp(this.game, gain.levels);
         this.background = this.renderBackground();
         this.game.saveGame();
 
@@ -427,8 +419,8 @@ export class DungeonScene implements Scene {
     private spawnDrops(loot: LootResult, x: number, y: number): void {
         const run: RunData = this.run;
         const room: RoomData = this.room;
-        const clampX: (v: number) => number = (v: number) => Math.max(1.8 * T, Math.min(ROOM_W - 1.8 * T, v));
-        const clampY: (v: number) => number = (v: number) => Math.max(3 * T, Math.min(ROOM_H - 1.8 * T, v));
+        const clampX: (v: number) => number = (v: number) => clamp(v, 1.8 * T, ROOM_W - 1.8 * T);
+        const clampY: (v: number) => number = (v: number) => clamp(v, 3 * T, ROOM_H - 1.8 * T);
         if (loot.gold > 0) {
             room.drops.push({id: run.nextDropId++, x: clampX(x), y: clampY(y), gold: loot.gold, item: null});
         }
@@ -482,10 +474,10 @@ export class DungeonScene implements Scene {
 
     // ------------------------------------------------------------ interactions
 
-    private interact(what: Interactable): void {
+    private interact(spot: InteractableSpot): void {
         const room: RoomData = this.room;
         const run: RunData = this.run;
-        switch (what) {
+        switch (spot.kind) {
             case Interactable.Chest: {
                 room.used = true;
                 room.cleared = true;
@@ -514,13 +506,9 @@ export class DungeonScene implements Scene {
             case Interactable.Stairs:
                 this.openStairs();
                 return;
-            case Interactable.Sign0:
-            case Interactable.Sign1:
-            case Interactable.Sign2: {
-                const index: number = what === Interactable.Sign0 ? 0 : what === Interactable.Sign1 ? 1 : 2;
-                this.choosePath((room.crossOptions as RoomType[])[index]);
+            case Interactable.Sign:
+                this.choosePath((room.crossOptions as RoomType[])[spot.index]);
                 return;
-            }
         }
         this.background = this.renderBackground();
         this.markHud();
@@ -569,27 +557,27 @@ export class DungeonScene implements Scene {
         );
     }
 
-    private interactablePositions(): {kind: Interactable; x: number; y: number}[] {
+    private interactablePositions(): InteractableSpot[] {
         const room: RoomData = this.room;
-        const list: {kind: Interactable; x: number; y: number}[] = [];
+        const list: InteractableSpot[] = [];
         const type: RoomType = effectiveType(room);
         if (room.type === RoomType.Crossroads && !room.chosen) {
-            [Interactable.Sign0, Interactable.Sign1, Interactable.Sign2].forEach((kind: Interactable, i: number) => {
-                list.push({kind: kind, x: SIGN_POSITIONS[i][0], y: SIGN_POSITIONS[i][1]});
+            SIGN_POSITIONS.forEach(([x, y]: [number, number], i: number) => {
+                list.push({kind: Interactable.Sign, x: x, y: y, index: i});
             });
             return list;
         }
         if (type === RoomType.Treasure && !room.used) {
-            list.push({kind: Interactable.Chest, x: CENTER_X, y: CENTER_Y});
+            list.push({kind: Interactable.Chest, x: CENTER_X, y: CENTER_Y, index: 0});
         }
         if (type === RoomType.Rest && !room.used) {
-            list.push({kind: Interactable.Fire, x: CENTER_X, y: CENTER_Y});
+            list.push({kind: Interactable.Fire, x: CENTER_X, y: CENTER_Y, index: 0});
         }
         if (type === RoomType.Event && !room.used && room.event && room.event !== DungeonEventKey.Trap) {
-            list.push({kind: Interactable.Event, x: CENTER_X, y: CENTER_Y});
+            list.push({kind: Interactable.Event, x: CENTER_X, y: CENTER_Y, index: 0});
         }
         if (room.type === RoomType.Boss && room.cleared && this.run.floor < LAST_FLOOR) {
-            list.push({kind: Interactable.Stairs, x: CENTER_X, y: 4 * T});
+            list.push({kind: Interactable.Stairs, x: CENTER_X, y: 4 * T, index: 0});
         }
         return list;
     }
@@ -634,14 +622,12 @@ export class DungeonScene implements Scene {
     public update(dt: number): void {
         this.time += dt;
         this.fade = Math.max(0, this.fade - dt * 3);
+        this.swing = Math.max(0, this.swing - dt * 3.5);
+        this.spells.update(dt);
         if (this.hudDirty) {
             this.refreshHud();
         }
-        this.floating = this.floating.filter((f: FloatingText) => {
-            f.life -= dt;
-            f.y -= dt * 30;
-            return f.life > 0;
-        });
+        this.floating.update(dt);
         if (this.busy || !this.save.run) {
             return;
         }
@@ -719,24 +705,48 @@ export class DungeonScene implements Scene {
         }
 
         // Interactions.
-        let best: {kind: Interactable; x: number; y: number} | null = null;
-        let bestDist: number = INTERACT_RANGE;
-        for (const it of this.interactablePositions()) {
-            const d: number = Math.hypot(this.hero.x - it.x, this.hero.y - it.y);
-            if (d < bestDist) {
-                bestDist = d;
-                best = it;
-            }
-        }
-        this.near = best ? best.kind : null;
+        this.near = nearestWithin(this.hero, this.interactablePositions(), INTERACT_RANGE);
         this.updateHint();
         if (this.near && input.wasPressed("KeyE", "Space", "Enter")) {
             this.interact(this.near);
-        } else if (input.wasPressed("KeyI")) {
-            this.openInventory();
-        } else if (input.wasPressed("KeyC")) {
-            openCharacter(this.game, {onChange: () => this.markHud()});
+        } else {
+            handleWorldHotkeys(this.game, this.world, input);
         }
+        // Click/J while exploring: just the gesture (bows shoot a stray arrow); fights start by touching monsters.
+        if ((input.mouseLeftClicked || input.wasPressed("KeyJ")) && this.swing <= 0) {
+            this.swing = 1;
+            this.game.audio.play(Sfx.Swing);
+            if (heroWeaponType(this.save.hero.classKey) === WeaponType.Bow) {
+                const aim: Vec2 = this.hero.aim();
+                const from: Vec2 = {x: this.hero.x + aim.x * 10, y: this.hero.y - 30};
+                this.spells.shootArrow(from, {x: from.x + aim.x * 200, y: from.y + aim.y * 150}, 0.75);
+            }
+        }
+        const slot: number = pressedSlot(input);
+        if (slot >= 0) {
+            this.useSlot(slot);
+        }
+    }
+
+    /** Action bar while exploring: potions heal; abilities are for fights. */
+    private useSlot(index: number): void {
+        const slot: ActionBarSlot | null = syncActionBar(this.save)[index] ?? null;
+        if (!slot || this.busy || !this.save.run) {
+            return;
+        }
+        if (slot.kind === ActionBarSlot.Kind.Item && slot.item) {
+            if (usePotionOutsideCombat(this.save, slot.item)) {
+                this.game.audio.play(Sfx.Heal);
+                this.game.ui.toast(t("usedItem", {item: itemName(slot.item)}), ToastKind.Good);
+                this.game.saveGame();
+                this.markHud();
+            } else {
+                this.game.audio.play(Sfx.Error);
+                this.game.ui.toast(t("cannotUseHere"), ToastKind.Bad);
+            }
+            return;
+        }
+        this.game.ui.toast(t("abilityInFights"), ToastKind.Info);
     }
 
     private pickUp(drop: DropData): void {
@@ -761,7 +771,7 @@ export class DungeonScene implements Scene {
 
     private updateHint(): void {
         let hint: string = "";
-        switch (this.near) {
+        switch (this.near?.kind) {
             case Interactable.Chest:
                 hint = t("pressToInteract", {name: t("openChest")});
                 break;
@@ -774,21 +784,15 @@ export class DungeonScene implements Scene {
             case Interactable.Stairs:
                 hint = t("pressToInteract", {name: t("descend")});
                 break;
-            case Interactable.Sign0:
-            case Interactable.Sign1:
-            case Interactable.Sign2: {
-                const index: number = this.near === Interactable.Sign0 ? 0 : this.near === Interactable.Sign1 ? 1 : 2;
-                const option: RoomType = (this.room.crossOptions as RoomType[])[index];
+            case Interactable.Sign: {
+                const option: RoomType = (this.room.crossOptions as RoomType[])[this.near.index];
                 hint = t("pressToInteract", {name: t("choose") + ": " + t(pathLabelKey(option))});
                 break;
             }
             default:
                 hint = this.monster ? tr(MONSTERS[this.monster.spawn.key].name) + (this.monster.spawn.armored ? " ⛨" : "") : "";
         }
-        if (hint !== this.currentHint && this.hintEl) {
-            this.currentHint = hint;
-            this.hintEl.textContent = hint;
-        }
+        this.hud?.hint.set(hint);
     }
 
     // ------------------------------------------------------------ render
@@ -802,23 +806,6 @@ export class DungeonScene implements Scene {
         const room: RoomData = this.room;
         const seed: number = room.x * 31 + room.y * 17 + this.run.floor * 101;
         const painted: HTMLImageElement | undefined = roomFloor(this.run.floor, seed);
-        for (let ty: number = 0; ty < ROOM_TILES_H && !painted; ty++) {
-            for (let tx: number = 0; tx < ROOM_TILES_W; tx++) {
-                const n: number = hash(tx, ty, seed);
-                ctx.fillStyle = shade((tx + ty) % 2 === 0 ? fd.floorColor : fd.floorAlt, (n - 0.5) * 0.12);
-                ctx.fillRect(tx * T, ty * T, T, T);
-                ctx.strokeStyle = "rgba(0,0,0,0.18)";
-                ctx.strokeRect(tx * T + 0.5, ty * T + 0.5, T - 1, T - 1);
-                if (n > 0.9) {
-                    ctx.strokeStyle = "rgba(0,0,0,0.3)";
-                    ctx.beginPath();
-                    ctx.moveTo(tx * T + 6, ty * T + 8);
-                    ctx.lineTo(tx * T + 14, ty * T + 15);
-                    ctx.lineTo(tx * T + 12, ty * T + 24);
-                    ctx.stroke();
-                }
-            }
-        }
         if (painted) {
             // One painted floor for the whole room (cover-fit), a touch darker so characters stand out.
             const scale: number = Math.max(ROOM_W / painted.width, ROOM_H / painted.height);
@@ -827,32 +814,6 @@ export class DungeonScene implements Scene {
             ctx.drawImage(painted, (ROOM_W - dw) / 2, (ROOM_H - dh) / 2, dw, dh);
             ctx.fillStyle = "rgba(10,6,14,0.18)";
             ctx.fillRect(0, 0, ROOM_W, ROOM_H);
-        }
-        // Walls
-        ctx.fillStyle = fd.wallColor;
-        ctx.fillRect(0, 0, ROOM_W, 2 * T);
-        ctx.fillRect(0, 0, T, ROOM_H);
-        ctx.fillRect(ROOM_W - T, 0, T, ROOM_H);
-        ctx.fillRect(0, ROOM_H - T, ROOM_W, T);
-        // Top wall face with bricks
-        ctx.fillStyle = fd.wallTop;
-        ctx.fillRect(T, T * 0.9, ROOM_W - 2 * T, T * 1.1);
-        ctx.strokeStyle = "rgba(0,0,0,0.3)";
-        ctx.lineWidth = 1;
-        for (let row: number = 0; row < 2; row++) {
-            const by: number = T * 0.9 + row * (T * 0.55);
-            ctx.beginPath();
-            ctx.moveTo(T, by);
-            ctx.lineTo(ROOM_W - T, by);
-            ctx.stroke();
-            for (let bx: number = T + (row % 2) * 12; bx < ROOM_W - T; bx += 24) {
-                ctx.beginPath();
-                ctx.moveTo(bx, by);
-                ctx.lineTo(bx, by + T * 0.55);
-                ctx.stroke();
-            }
-        }
-        if (painted) {
             this.paintWalls(ctx, painted, fd);
         }
         // Soft contact shadow along every wall so the floor sinks into the room.
@@ -915,7 +876,7 @@ export class DungeonScene implements Scene {
         const fit: number = this.fitZoom();
         this.camera.minZoom = fit * 0.75;
         this.camera.maxZoom = fit * 1.8;
-        this.camera.zoom = Math.max(this.camera.minZoom, Math.min(this.camera.maxZoom, this.camera.zoom));
+        this.camera.zoom = clamp(this.camera.zoom, this.camera.minZoom, this.camera.maxZoom);
         this.camera.follow(this.hero.x, this.hero.y, 1 / 60, ROOM_W, ROOM_H, w, h);
         ctx.save();
         this.camera.apply(ctx, w, h);
@@ -925,11 +886,7 @@ export class DungeonScene implements Scene {
         this.drawTorches(ctx);
         this.drawDoorBars(ctx);
         this.drawRoomContents(ctx);
-        for (const f of this.floating) {
-            ctx.globalAlpha = Math.min(1, f.life * 2);
-            drawText(ctx, f.text, f.x, f.y, 13, f.color);
-            ctx.globalAlpha = 1;
-        }
+        this.floating.draw(ctx);
         // Vignette
         const v: CanvasGradient = ctx.createRadialGradient(this.hero.x, this.hero.y, 90, this.hero.x, this.hero.y, 520);
         v.addColorStop(0, "rgba(0,0,0,0)");
@@ -981,18 +938,13 @@ export class DungeonScene implements Scene {
     }
 
     private drawCampfireArt(ctx: CanvasRenderingContext2D, lit: boolean): void {
-        const unlitArt: boolean = !lit && !propArt(DungeonProp.CampfireOut) && propArt(DungeonProp.Campfire) !== undefined;
         ctx.save();
-        if (unlitArt) {
+        if (!lit) {
             // Used campfire: the same painting, cold and dark.
             ctx.filter = "grayscale(0.85) brightness(0.55)";
         }
-        const drawn: boolean = drawProp(ctx, lit || unlitArt ? DungeonProp.Campfire : DungeonProp.CampfireOut, CENTER_X, CENTER_Y + 8, 48);
+        drawProp(ctx, DungeonProp.Campfire, CENTER_X, CENTER_Y + 8, 48);
         ctx.restore();
-        if (!drawn) {
-            drawCampfire(ctx, CENTER_X, CENTER_Y, lit, this.time);
-            return;
-        }
         if (lit) {
             glow(ctx, CENTER_X, CENTER_Y - 14, 70 + Math.sin(this.time * 8) * 5, "#ff922b", 0.35);
             // Rising sparks.
@@ -1006,31 +958,17 @@ export class DungeonScene implements Scene {
         }
     }
 
-    private drawStairsArt(ctx: CanvasRenderingContext2D): boolean {
-        if (!propArt(DungeonProp.Stairs)) {
-            return false;
-        }
+    private drawStairsArt(ctx: CanvasRenderingContext2D): void {
         glow(ctx, CENTER_X, 4 * T - 16, 56 + Math.sin(this.time * 2) * 5, "#b197fc", 0.32);
-        return drawProp(ctx, DungeonProp.Stairs, CENTER_X, 4 * T + 14, 64);
+        drawProp(ctx, DungeonProp.Stairs, CENTER_X, 4 * T + 14, 64);
     }
 
     private drawTorches(ctx: CanvasRenderingContext2D): void {
         for (const tx of [3.5 * T, ROOM_W - 3.5 * T]) {
             const flick: number = Math.sin(this.time * 10 + tx) * 2;
-            if (propArt(DungeonProp.Torch)) {
-                glow(ctx, tx, 1.1 * T, 70 + flick * 2, "#ff922b", 0.4);
-                drawProp(ctx, DungeonProp.Torch, tx, 1.75 * T, 40);
-                glow(ctx, tx, 0.95 * T, 14 + flick, "#ffe8a3", 0.5);
-                continue;
-            }
-            glow(ctx, tx, 1.2 * T, 50 + flick, "#ff922b", 0.35);
-            rectPath(ctx, tx - 2, 1.2 * T, 4, 12, 1);
-            fillStroke(ctx, "#6b4226", 1);
-            ctx.beginPath();
-            ctx.moveTo(tx - 5, 1.2 * T);
-            ctx.quadraticCurveTo(tx, 1.2 * T - 16 + flick, tx + 5, 1.2 * T);
-            ctx.fillStyle = "#ffa94d";
-            ctx.fill();
+            glow(ctx, tx, 1.1 * T, 70 + flick * 2, "#ff922b", 0.4);
+            drawProp(ctx, DungeonProp.Torch, tx, 1.75 * T, 40);
+            glow(ctx, tx, 0.95 * T, 14 + flick, "#ffe8a3", 0.5);
         }
     }
 
@@ -1075,20 +1013,19 @@ export class DungeonScene implements Scene {
         const room: RoomData = this.room;
         const type: RoomType = effectiveType(room);
         const items: {y: number; draw: () => void}[] = [];
-        const nearGlow: (kind: Interactable) => boolean = (kind: Interactable) => this.near === kind;
+        const nearSign: (index: number) => boolean = (index: number) => this.near?.kind === Interactable.Sign && this.near.index === index;
 
         if (room.type === RoomType.Crossroads && !room.chosen && room.crossOptions) {
             room.crossOptions.forEach((option: RoomType, i: number) => {
                 const style: {color: string; symbol: string} = PATH_STYLE[option] ?? {color: "#868e96", symbol: "?"};
-                const kind: Interactable = [Interactable.Sign0, Interactable.Sign1, Interactable.Sign2][i];
                 items.push({y: SIGN_POSITIONS[i][1], draw: () => {
-                    drawSignpost(ctx, SIGN_POSITIONS[i][0], SIGN_POSITIONS[i][1], style.color, style.symbol, nearGlow(kind));
+                    drawSignpost(ctx, SIGN_POSITIONS[i][0], SIGN_POSITIONS[i][1], style.color, style.symbol, nearSign(i));
                     drawText(ctx, t(pathLabelKey(option)), SIGN_POSITIONS[i][0], SIGN_POSITIONS[i][1] + 12, 10, "#f1e3c4");
                 }});
             });
         }
         if (type === RoomType.Treasure) {
-            items.push({y: CENTER_Y, draw: () => (drawProp(ctx, room.used ? DungeonProp.ChestOpen : DungeonProp.Chest, CENTER_X, CENTER_Y + 8, 44) || drawChest(ctx, CENTER_X, CENTER_Y, room.used, this.time))});
+            items.push({y: CENTER_Y, draw: () => drawProp(ctx, room.used ? DungeonProp.ChestOpen : DungeonProp.Chest, CENTER_X, CENTER_Y + 8, 44)});
         }
         if (type === RoomType.Rest) {
             items.push({y: CENTER_Y, draw: () => this.drawCampfireArt(ctx, !room.used)});
@@ -1097,7 +1034,7 @@ export class DungeonScene implements Scene {
             items.push({y: CENTER_Y, draw: () => this.drawEventObject(ctx, room)});
         }
         if (room.type === RoomType.Boss && room.cleared && this.run.floor < LAST_FLOOR) {
-            items.push({y: 4 * T - 30, draw: () => (this.drawStairsArt(ctx) || drawStairs(ctx, CENTER_X, 4 * T, this.time))});
+            items.push({y: 4 * T - 30, draw: () => this.drawStairsArt(ctx)});
         }
         for (const drop of room.drops) {
             items.push({y: drop.y - 5, draw: () => (drop.item ? drawLootBag(ctx, drop.x, drop.y, this.time) : drawCoins(ctx, drop.x, drop.y, this.time))});
@@ -1121,12 +1058,14 @@ export class DungeonScene implements Scene {
         });
         items.push({y: this.hero.y, draw: () => drawClassHero(ctx, this.hero.x, this.hero.y, this.save.hero.classKey, defaultPose({
             view: this.hero.view,
-            facing: this.hero.facing, walk: this.hero.walk, moving: this.hero.moving, time: this.time
+            facing: this.hero.facing, walk: this.hero.walk, moving: this.hero.moving, time: this.time,
+            attack: this.swing > 0 ? 1 - this.swing : 0
         }))});
         items.sort((a: {y: number}, b: {y: number}) => a.y - b.y);
         for (const item of items) {
             item.draw();
         }
+        this.spells.draw(ctx);
     }
 
     private drawEventObject(ctx: CanvasRenderingContext2D, room: RoomData): void {
@@ -1134,16 +1073,15 @@ export class DungeonScene implements Scene {
         const y: number = CENTER_Y;
         switch (room.event) {
             case DungeonEventKey.Blueprint:
-                if (!drawProp(ctx, DungeonProp.Pedestal, x, y + 6, 56)) {
-                    drawPedestal(ctx, x, y, this.time, "#74c0fc", !room.used);
-                } else if (!room.used) {
+                drawProp(ctx, DungeonProp.Pedestal, x, y + 6, 56);
+                if (!room.used) {
                     glow(ctx, x, y - 40, 30 + Math.sin(this.time * 3) * 4, "#74c0fc", 0.35);
                 }
                 break;
             case DungeonEventKey.ClassOffer:
                 if (!room.used) {
                     glow(ctx, x, y - 20, 40, "#b197fc", 0.4);
-                    drawHero(ctx, x, y, {skin: "#2b2233", hair: "#2b2233", outfit: "#3b2a55", outfitDark: "#21172f", accent: "#b197fc", hat: HatStyle.Hood, weapon: WeaponStyle.Staff, ears: EarStyle.Human, tail: TailStyle.None, cape: "#21172f", shield: false}, defaultPose({time: this.time, facing: -1, scale: 1.1}));
+                    drawHero(ctx, x, y, {skin: "#2b2233", hair: "#2b2233", outfit: "#3b2a55", outfitDark: "#21172f", accent: "#b197fc", cape: "#21172f"}, defaultPose({time: this.time, facing: -1, scale: 1.1}));
                     ellipsePath(ctx, x - 1, y - 40, 11, 11);
                     ctx.fillStyle = "#21172f";
                     ctx.fill();
@@ -1159,21 +1097,18 @@ export class DungeonScene implements Scene {
                 }
                 break;
             case DungeonEventKey.Shrine:
-                if (!drawProp(ctx, DungeonProp.Shrine, x, y + 6, 64)) {
-                    drawShrine(ctx, x, y, this.time, !room.used);
-                } else if (!room.used) {
+                drawProp(ctx, DungeonProp.Shrine, x, y + 6, 64);
+                if (!room.used) {
                     glow(ctx, x, y - 48, 34 + Math.sin(this.time * 2.5) * 5, "#74c0fc", 0.4);
                 }
                 break;
             case DungeonEventKey.Wanderer:
                 if (!room.used) {
-                    drawHero(ctx, x, y, {skin: "#e0ac69", hair: "#adb5bd", outfit: "#8d6e45", outfitDark: "#5c4630", accent: "#e9ecef", hat: HatStyle.Hood, weapon: WeaponStyle.Staff, ears: EarStyle.Human, tail: TailStyle.None, cape: null, shield: false}, defaultPose({time: this.time, facing: -1}));
+                    drawHero(ctx, x, y, {skin: "#e0ac69", hair: "#adb5bd", outfit: "#8d6e45", outfitDark: "#5c4630", accent: "#e9ecef", cape: null}, defaultPose({time: this.time, facing: -1}));
                 }
                 break;
             case DungeonEventKey.Trap:
-                if (!drawProp(ctx, DungeonProp.Spikes, x, y + 22, room.used ? 30 : 38)) {
-                    drawSpikes(ctx, x, y + 10, room.used);
-                }
+                drawProp(ctx, DungeonProp.Spikes, x, y + 22, room.used ? 30 : 38);
                 break;
             default:
                 break;
@@ -1247,20 +1182,12 @@ export class DungeonScene implements Scene {
         if (room.drops.length > 0) {
             return "•";
         }
-        switch (type) {
-            case RoomType.Combat:
-                return room.cleared ? "" : "⚔";
-            case RoomType.Treasure:
-                return room.used ? "" : "$";
-            case RoomType.Rest:
-                return room.used ? "" : "♥";
-            case RoomType.Event:
-                return room.used ? "" : "?";
-            case RoomType.Crossroads:
-                return "✦";
-            default:
-                return "";
+        if (type === RoomType.Crossroads) {
+            return "✦";
         }
+        const style: {color: string; symbol: string} | undefined = PATH_STYLE[type];
+        const done: boolean = type === RoomType.Combat ? room.cleared : room.used;
+        return style && !done ? style.symbol : "";
     }
 
     private neighbours(room: RoomData): RoomData[] {

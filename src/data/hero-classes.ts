@@ -16,48 +16,13 @@ export enum ClassKey {
     DarkWitch = "dark_witch"
 }
 
-export enum HatStyle {
-    None = "none",
-    Headband = "headband",
-    WizardHat = "wizard_hat",
-    WitchHat = "witch_hat",
-    Helmet = "helmet",
-    Circlet = "circlet",
-    Hood = "hood"
-}
-
-export enum WeaponStyle {
-    Sword = "sword",
-    Staff = "staff",
-    Bow = "bow",
-    Dagger = "dagger",
-    Pole = "pole"
-}
-
-export enum EarStyle {
-    Human = "human",
-    Elf = "elf",
-    Cat = "cat"
-}
-
-export enum TailStyle {
-    None = "none",
-    Cat = "cat",
-    Monkey = "monkey"
-}
-
 export interface HeroLook {
     skin: string;
     hair: string;
     outfit: string;
     outfitDark: string;
     accent: string;
-    hat: HatStyle;
-    weapon: WeaponStyle;
-    ears: EarStyle;
-    tail: TailStyle;
     cape: string | null;
-    shield: boolean;
 }
 
 export interface ClassDef {
@@ -74,8 +39,8 @@ export interface ClassDef {
     look: HeroLook;
 }
 
-function look(skin: string, hair: string, outfit: string, outfitDark: string, accent: string, hat: HatStyle, weapon: WeaponStyle, extra: Partial<HeroLook> = {}): HeroLook {
-    return {skin: skin, hair: hair, outfit: outfit, outfitDark: outfitDark, accent: accent, hat: hat, weapon: weapon, ears: EarStyle.Human, tail: TailStyle.None, cape: null, shield: false, ...extra};
+function look(skin: string, hair: string, outfit: string, outfitDark: string, accent: string, cape: string | null = null): HeroLook {
+    return {skin: skin, hair: hair, outfit: outfit, outfitDark: outfitDark, accent: accent, cape: cape};
 }
 
 const CLASS_LIST: ClassDef[] = [
@@ -87,7 +52,7 @@ const CLASS_LIST: ClassDef[] = [
         growth: stats(15, 4.5, 2.5, 1.9, 2.3, 1.8, 0.2),
         abilities: [AbilityKey.FirmStrike, AbilityKey.StudyBolt, AbilityKey.MinorHeal, AbilityKey.Morale],
         recipe: [],
-        look: look("#f1c27d", "#6b4226", "#4c6ef5", "#364fc7", "#f5c542", HatStyle.None, WeaponStyle.Sword)
+        look: look("#f1c27d", "#6b4226", "#4c6ef5", "#364fc7", "#f5c542")
     },
     {
         key: ClassKey.Swordsman,
@@ -97,7 +62,7 @@ const CLASS_LIST: ClassDef[] = [
         growth: stats(16, 3, 3.2, 2.0, 0.8, 1.2, 0.3),
         abilities: [AbilityKey.Slash, AbilityKey.DoubleCut, AbilityKey.FlameBlade, AbilityKey.WarCry],
         recipe: [ItemKey.IronSword, ItemKey.KnightHelmet],
-        look: look("#f1c27d", "#2b2b2b", "#c92a2a", "#8f1d1d", "#ffd43b", HatStyle.Headband, WeaponStyle.Sword)
+        look: look("#f1c27d", "#2b2b2b", "#c92a2a", "#8f1d1d", "#ffd43b")
     },
     {
         key: ClassKey.Mage,
@@ -107,7 +72,7 @@ const CLASS_LIST: ClassDef[] = [
         growth: stats(10, 7, 1.0, 1.0, 3.4, 2.2, 0.2),
         abilities: [AbilityKey.Fireball, AbilityKey.FrostNova, AbilityKey.ArcaneMissiles, AbilityKey.ManaShield],
         recipe: [ItemKey.MageStaff, ItemKey.Amethyst],
-        look: look("#f1c27d", "#e9ecef", "#5f3dc4", "#3b2593", "#ffd43b", HatStyle.WizardHat, WeaponStyle.Staff)
+        look: look("#f1c27d", "#e9ecef", "#5f3dc4", "#3b2593", "#ffd43b")
     },
     {
         key: ClassKey.Elf,
@@ -117,7 +82,7 @@ const CLASS_LIST: ClassDef[] = [
         growth: stats(12, 5, 2.6, 1.4, 2.2, 1.8, 0.4),
         abilities: [AbilityKey.ArrowRain, AbilityKey.PoisonArrow, AbilityKey.NaturesBlessing, AbilityKey.EagleEye],
         recipe: [ItemKey.OakBow, ItemKey.Emerald],
-        look: look("#f8d7b5", "#ffe066", "#2b8a3e", "#1b5e2a", "#d8f5a2", HatStyle.None, WeaponStyle.Bow, {ears: EarStyle.Elf})
+        look: look("#f8d7b5", "#ffe066", "#2b8a3e", "#1b5e2a", "#d8f5a2")
     },
     {
         key: ClassKey.Wukong,
@@ -127,7 +92,7 @@ const CLASS_LIST: ClassDef[] = [
         growth: stats(15, 4.5, 2.9, 1.8, 1.8, 1.6, 0.3),
         abilities: [AbilityKey.StaffCombo, AbilityKey.CloudStrike, AbilityKey.GoldenBody, AbilityKey.HeavenlyThunder],
         recipe: [ItemKey.Quarterstaff, ItemKey.GoldOre],
-        look: look("#d9a066", "#8a5a2b", "#f08c00", "#b8590a", "#ffd43b", HatStyle.Circlet, WeaponStyle.Pole, {tail: TailStyle.Monkey})
+        look: look("#d9a066", "#8a5a2b", "#f08c00", "#b8590a", "#ffd43b")
     },
     {
         key: ClassKey.Cat,
@@ -137,7 +102,7 @@ const CLASS_LIST: ClassDef[] = [
         growth: stats(12, 4, 2.8, 1.4, 1.6, 1.6, 0.5),
         abilities: [AbilityKey.ScratchFury, AbilityKey.Pounce, AbilityKey.HypnoticGaze, AbilityKey.NineLives],
         recipe: [ItemKey.FeatherBoots, ItemKey.Topaz],
-        look: look("#f1c27d", "#f76707", "#495057", "#2b2f33", "#ffa94d", HatStyle.None, WeaponStyle.Dagger, {ears: EarStyle.Cat, tail: TailStyle.Cat})
+        look: look("#f1c27d", "#f76707", "#495057", "#2b2f33", "#ffa94d")
     },
     {
         key: ClassKey.Knight,
@@ -147,7 +112,7 @@ const CLASS_LIST: ClassDef[] = [
         growth: stats(20, 3, 2.4, 3.0, 0.8, 2.2, 0.1),
         abilities: [AbilityKey.ShieldBash, AbilityKey.HolyStrike, AbilityKey.Fortress, AbilityKey.LayOnHands],
         recipe: [ItemKey.IronShield, ItemKey.ChainMail],
-        look: look("#f1c27d", "#a0663a", "#ced4da", "#868e96", "#4dabf7", HatStyle.Helmet, WeaponStyle.Sword, {shield: true})
+        look: look("#f1c27d", "#a0663a", "#ced4da", "#868e96", "#4dabf7")
     },
     {
         key: ClassKey.Vampire,
@@ -157,7 +122,7 @@ const CLASS_LIST: ClassDef[] = [
         growth: stats(13, 5.5, 2.2, 1.4, 2.8, 1.8, 0.3),
         abilities: [AbilityKey.BloodDrain, AbilityKey.BatSwarm, AbilityKey.CharmGaze, AbilityKey.CrimsonFeast],
         recipe: [ItemKey.Dagger, ItemKey.RubyOre],
-        look: look("#e9ecef", "#212529", "#862e9c", "#5a1d6b", "#e03131", HatStyle.None, WeaponStyle.Dagger, {cape: "#c92a2a"})
+        look: look("#e9ecef", "#212529", "#862e9c", "#5a1d6b", "#e03131", "#c92a2a")
     },
     {
         key: ClassKey.DarkElf,
@@ -167,7 +132,7 @@ const CLASS_LIST: ClassDef[] = [
         growth: stats(12, 5, 3.0, 1.4, 2.4, 1.6, 0.4),
         abilities: [AbilityKey.ShadowArrow, AbilityKey.VenomVolley, AbilityKey.NightVeil, AbilityKey.SoulRend],
         recipe: [ItemKey.OakBow, ItemKey.ShadowEssence],
-        look: look("#7d6b91", "#f8f9fa", "#343a40", "#1e2124", "#9775fa", HatStyle.Hood, WeaponStyle.Bow, {ears: EarStyle.Elf})
+        look: look("#7d6b91", "#f8f9fa", "#343a40", "#1e2124", "#9775fa")
     },
     {
         key: ClassKey.DarkWitch,
@@ -177,7 +142,7 @@ const CLASS_LIST: ClassDef[] = [
         growth: stats(9, 8, 0.8, 0.9, 3.8, 2.4, 0.2),
         abilities: [AbilityKey.HexBolt, AbilityKey.CurseOfSleep, AbilityKey.Hellfire, AbilityKey.SoulSiphon],
         recipe: [ItemKey.WitchHat, ItemKey.Onyx],
-        look: look("#f1e3d3", "#5c1a70", "#212529", "#101113", "#be4bdb", HatStyle.WitchHat, WeaponStyle.Staff)
+        look: look("#f1e3d3", "#5c1a70", "#212529", "#101113", "#be4bdb")
     }
 ];
 

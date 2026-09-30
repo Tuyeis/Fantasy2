@@ -1,5 +1,6 @@
 import {ClassKey} from "../data/hero-classes";
 import {drawClassHero} from "./class-hero";
+import {ease} from "./draw-utils";
 import {defaultPose, HeroPose} from "./hero-sprite";
 import {PuppetView} from "./puppet/puppet-types";
 
@@ -23,11 +24,9 @@ const DURATION: number = 2.8;
 /** Moment the old class turns into the new one. */
 const SWAP: number = 1.25;
 
-const ease: (k: number) => number = (k: number): number => 1 - Math.pow(1 - k, 3);
-
 /** Draws the effect at time t; kept separate from the animation loop so it can be rendered at any moment. */
 export class ClassTransformFx {
-    private readonly sparks: Spark[] = [];
+    private sparks: Spark[] = [];
     private burst: boolean = false;
 
     public constructor(private readonly from: ClassKey, private readonly to: ClassKey, private readonly banner: string,
@@ -133,11 +132,7 @@ export class ClassTransformFx {
             ctx.fill();
         }
         ctx.restore();
-        for (let i: number = this.sparks.length - 1; i >= 0; i--) {
-            if (this.sparks[i].life <= 0) {
-                this.sparks.splice(i, 1);
-            }
-        }
+        this.sparks = this.sparks.filter((spark: Spark) => spark.life > 0);
 
         // White flash at the swap.
         const flash: number = Math.max(0, 1 - Math.abs(t - SWAP) / 0.18);

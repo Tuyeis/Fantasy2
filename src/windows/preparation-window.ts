@@ -6,12 +6,11 @@ import {button, el, ToastKind, WindowHandle} from "../core/ui";
 import {CLASSES} from "../data/hero-classes";
 import {ItemCategory, ItemDef, ITEMS} from "../data/items";
 import {PerkKey} from "../data/perks";
-import {bagHasRoomFor} from "../logic/bank";
-import {buyPrice, buyWithGold} from "../logic/economy";
+import {buyPrice, Currency} from "../logic/economy";
 import {computeHeroStats, perkRank} from "../logic/hero-stats";
 import {countItem, itemName} from "../logic/inventory";
 import {classPortrait} from "./class-window";
-import {goldText, itemDescription, itemRow, sectionTitle, statTable} from "./window-helpers";
+import {buyButton, goldText, itemDescription, itemRow, rerender, sectionTitle, statTable} from "./window-helpers";
 
 export function openPreparation(game: Game, onStart: (floor: number) => void, onChange: () => void): void {
     const save: SaveData = game.save as SaveData;
@@ -31,23 +30,13 @@ export function openPreparation(game: Game, onStart: (floor: number) => void, on
     const render: () => void = () => {
         const potions: ItemDef[] = (Object.values(ITEMS) as ItemDef[]).filter((def: ItemDef) => def.inShop && def.category === ItemCategory.Potion);
         const shopRows: HTMLElement[] = potions.map((def: ItemDef) => {
-            const price: number = buyPrice(save, def.key);
             return itemRow(def.key, itemName(def.key) + " ×" + countItem(save, def.key), itemDescription(def.key), [
-                goldText(price),
-                button(t("buy"), () => {
-                    if (!bagHasRoomFor(save, def.key)) {
-                    game.audio.play(Sfx.Error);
-                    game.ui.toast(t("bagFull"), ToastKind.Bad);
-                } else if (buyWithGold(save, def.key)) {
-                        game.audio.play(Sfx.Buy);
-                        game.saveGame();
-                        onChange();
-                        render();
-                    } else {
-                        game.audio.play(Sfx.Error);
-                        game.ui.toast(t("notEnoughGold"), ToastKind.Bad);
-                    }
-                }, {cls: "btn-small btn-primary", disabled: save.hero.gold < price})
+                goldText(buyPrice(save, def.key)),
+                buyButton(game, def.key, Currency.Gold, () => {
+                    game.saveGame();
+                    onChange();
+                    render();
+                })
             ]);
         });
         const floorButtons: HTMLElement = el("div", {style: {display: "flex", gap: "6px", flexWrap: "wrap"}});
@@ -77,9 +66,7 @@ export function openPreparation(game: Game, onStart: (floor: number) => void, on
             el("div", {cls: "hud-line", style: {marginBottom: "6px"}}, [el("span", {}, [t("gold") + ": ", el("b", {text: String(save.hero.gold)})])]),
             el("div", {cls: "list"}, shopRows)
         ]);
-        const scrollTop: number = win.body.scrollTop;
-        win.body.replaceChildren(el("div", {cls: "grid-2"}, [left, right]));
-        win.body.scrollTop = scrollTop;
+        rerender(win, el("div", {cls: "grid-2"}, [left, right]));
         win.footer.replaceChildren(
             button(t("cancel"), () => win.close()),
             button(t("enterDungeon") + " (" + t("enteringFloor", {n: floor}) + ")", () => {

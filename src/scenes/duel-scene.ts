@@ -4,8 +4,8 @@ import {t, tr} from "../core/i18n";
 import {Input, Vec2} from "../core/input";
 import {randFloat} from "../core/rng";
 import {SaveData} from "../core/save-store";
-import {button, el, ToastKind, WindowHandle} from "../core/ui";
-import {AbilityDef, AbilityKey, AbilityKind, ABILITIES, DamageType} from "../data/abilities";
+import {el, ToastKind} from "../core/ui";
+import {AbilityDef, AbilityKey, AbilityKind, DamageType} from "../data/abilities";
 import {MonsterSpawn, RunData} from "../data/dungeon-types";
 import {Element} from "../data/element";
 import {FloorDef, floorDef} from "../data/floors";
@@ -16,38 +16,71 @@ import {StatusKey} from "../data/status-effect";
 import {CombatOutcome, createEnemyCombatant, createHeroCombatant} from "../logic/combat-engine";
 import {Combatant, DamageRoll, effectiveStat, rollDamage} from "../logic/combat-math";
 import {REAL_TIME_REWARD_BONUS, RealTimeBehaviour, realTimeBehaviour} from "../logic/encounter-mode";
-import {computeHeroStats, dashCharges} from "../logic/hero-stats";
-import {abilityIconEl} from "../render/ability-icons";
+import {computeHeroStats, dashCharges, potionMultiplier} from "../logic/hero-stats";
+import {basicAttackMultiplier, effectiveAbility} from "../logic/talents";
+import {syncActionBar} from "../logic/action-bar";
+import {removeItem} from "../logic/inventory";
+import {ActionBarSlot} from "../data/action-bar";
+import {ItemDef, ItemKey, ITEMS} from "../data/items";
+import {ActionBarHud, pressedSlot} from "./action-bar-hud";
 import {drawClassHero} from "../render/class-hero";
 import {DungeonProp, drawProp, roomFloor} from "../render/dungeon-art";
 import {drawText, ellipsePath, glow, rgba, shade} from "../render/draw-utils";
+import {FloaterLayer} from "../render/floater-layer";
 import {defaultPose} from "../render/hero-sprite";
 import {defaultMonsterPose, drawMonster} from "../render/monster-sprite";
 import {PuppetView} from "../render/puppet/puppet-types";
-import {FxStyle, fxImpactDelay, fxStyleOf, RANGED_STYLES, SpellFxLayer} from "../render/spell-fx";
-import {openOptions} from "../windows/options-window";
+import {ARROW_IMPACT_DELAY, FxStyle, fxImpactDelay, fxStyleOf, RANGED_STYLES, SpellFxLayer} from "../render/spell-fx";
+import {heroWeaponType} from "../render/class-hero";
+import {WeaponType} from "../render/puppet/puppet-types";
+import {openBattlePause} from "./battle-pause";
 import {CombatScene, CombatSummary} from "./combat-scene";
+import {clampToArena, RealTimeBolt, RealTimeHero} from "./real-time-hero";
+import {bar} from "./world-helpers";
 
 /** Real-time duel against the monster of a dungeon room (the hybrid-combat alternative to turns). */
 
 const ARENA_W: number = 360;
 const ARENA_H: number = 220;
 const HERO_SPEED: number = 190;
-const DASH_SPEED: number = 620;
-const DASH_TIME: number = 0.17;
-const IFRAME_TIME: number = 0.32;
-const DASH_RECHARGE: number = 2.2;
+const DASH: RealTimeHero.DashConfig = {speed: 620, time: 0.17, iframeTime: 0.32, recharge: 2.8};
 const MELEE_RANGE: number = 74;
-const MELEE_COOLDOWN: number = 0.38;
+const MELEE_COOLDOWN: number = 0.5;
+/** Basic swings come much faster than turns, so each one hits softer. */
+const MELEE_POWER: number = 0.75;
+const DASH_SLASH_POWER: number = 0.6;
+/** Bow basic attack: always reaches, so it is slower and softer than a swing (tuned with tools/duel-bot.js). */
+const BOW_COOLDOWN: number = 0.75;
+const BOW_POWER: number = 0.6;
+const BOW_MOVE_MULT: number = 0.45;
+/** A melee swing leaps at a hero this far away (× strike reach): walk-backs don't dodge, dashes do. */
+const LEAP_REACH: number = 2;
+const CHASE_SPEED_MULT: number = 1.9;
+/** Share of max mana regenerated per second. */
+const MANA_REGEN: number = 0.025;
 /** Real-time pacing of abilities: base cooldown plus a share of the mana cost. */
-const ABILITY_BASE_COOLDOWN: number = 1.2;
-const ABILITY_COOLDOWN_PER_MANA: number = 0.18;
+const ABILITY_BASE_COOLDOWN: number = 2.5;
+const ABILITY_COOLDOWN_PER_MANA: number = 0.22;
+/**
+ * You act several times per enemy attack in real time (turns are 1:1), so monsters need more HP here.
+ * Tuned with tools/duel-bot.js so a real-time fight costs about as much HP as the same fight by turns.
+ */
+const REAL_TIME_ENEMY_HP: number = 4;
+/** Hits you fail to dodge hurt more than a turn-based hit: dodging is the skill real time rewards. */
+const REAL_TIME_ENEMY_DAMAGE: number = 1.3;
+/** Per floor below the first, monsters attack this much more often and move this much faster. */
+const AGGRESSION_PER_FLOOR: number = 0.08;
+/** Hits push the monster back (px/s), unless it is winding up or lunging: then it keeps coming. */
+const KNOCKBACK_LIGHT: number = 70;
+const KNOCKBACK_HEAVY: number = 20;
 /** One turn of a buff lasts this many seconds in real time. */
 const SECONDS_PER_TURN: number = 3;
 /** Touching a monster hurts (fraction of its melee power) at most this often. */
 const CONTACT_POWER: number = 0.55;
 const CONTACT_COOLDOWN: number = 0.75;
 const SPRITE_SCALE: number = 1.45;
+/** Seconds between potions in real time (no chugging a whole stack mid-fight). */
+const POTION_COOLDOWN: number = 2.5;
 const FOCUS_PER_HIT: number = 0.12;
 const FOCUS_PER_DODGE: number = 0.25;
 
@@ -62,17 +95,6 @@ enum DuelState {
     Intro = "intro",
     Fighting = "fighting",
     Over = "over"
-}
-
-interface Bolt {
-    x: number;
-    y: number;
-    vx: number;
-    vy: number;
-    life: number;
-    friendly: boolean;
-    damage: number;
-    color: string;
 }
 
 interface PendingHit {
@@ -93,56 +115,49 @@ interface Dot {
     color: string;
 }
 
-interface HotbarSlot {
-    root: HTMLElement;
-    shade: HTMLElement;
-    label: HTMLElement;
-}
-
-interface Floater {
-    text: string;
-    x: number;
-    y: number;
-    life: number;
-    color: string;
-}
-
 function abilityCooldown(def: AbilityDef): number {
     return ABILITY_BASE_COOLDOWN + def.manaCost * ABILITY_COOLDOWN_PER_MANA;
 }
 
-export class DuelScene implements Scene {
+export class DuelScene implements Scene, RealTimeHero {
     public readonly music: MusicTrack;
     private readonly monster: MonsterDef;
+    private readonly isBoss: boolean;
     private readonly behaviour: RealTimeBehaviour;
     private readonly hero: Combatant;
     private readonly enemy: Combatant;
     // hero
-    private x: number = -200;
-    private y: number = 20;
+    public x: number = -200;
+    public y: number = 20;
     private facing: number = 1;
     private view: PuppetView = PuppetView.Side;
     private aim: Vec2 = {x: 1, y: 0};
     private walk: number = 0;
     private moving: boolean = false;
-    private dashTimer: number = 0;
-    private dashDir: Vec2 = {x: 1, y: 0};
-    private iframes: number = 0;
-    private charges: number;
-    private readonly maxCharges: number;
-    private rechargeTimer: number = 0;
+    public dashTimer: number = 0;
+    public dashDir: Vec2 = {x: 1, y: 0};
+    public iframes: number = 0;
+    public charges: number;
+    public readonly maxCharges: number;
+    public rechargeTimer: number = 0;
     private meleeTimer: number = 0;
     /** A click during the swing cooldown is remembered briefly instead of being lost. */
     private attackBuffer: number = 0;
     /** The current dash already slashed the enemy. */
     private dashHit: boolean = false;
     private dashTrail: {x: number; y: number; life: number; facing: number}[] = [];
-    private readonly abilities: AbilityKey[];
-    private cooldowns: number[] = [0, 0, 0, 0];
+    /** Talent bonus to basic attacks and the dash slash. */
+    private readonly basicMultiplier: number;
+    /** Seconds left per ability. */
+    private readonly cooldowns: Map<AbilityKey, number> = new Map<AbilityKey, number>();
+    private potionCooldown: number = 0;
     private readonly spells: SpellFxLayer = new SpellFxLayer();
     private pendingHits: PendingHit[] = [];
+    /** Landing times of basic-attack arrows in flight. */
+    private arrowHits: number[] = [];
+    private readonly bowWielder: boolean;
     private timedBuffs: TimedBuff[] = [];
-    private hotbar: HotbarSlot[] = [];
+    private actionBar: ActionBarHud | null = null;
     private swing: number = 0;
     private flash: number = 0;
     private focus: number = 0;
@@ -150,7 +165,7 @@ export class DuelScene implements Scene {
     private ex: number = 200;
     private ey: number = 20;
     private enemyState: EnemyState = EnemyState.Approach;
-    private enemyTimer: number = 1;
+    private enemyTimer: number = 0.5;
     private enemyFlash: number = 0;
     private enemyAttack: number = 0;
     private lungeDir: Vec2 = {x: -1, y: 0};
@@ -163,8 +178,8 @@ export class DuelScene implements Scene {
     private enemyMoving: boolean = false;
     private enemyWalk: number = 0;
     // world
-    private bolts: Bolt[] = [];
-    private floaters: Floater[] = [];
+    private bolts: RealTimeBolt[] = [];
+    private readonly floaters: FloaterLayer = new FloaterLayer({riseSpeed: 40, size: 18});
     private state: DuelState = DuelState.Intro;
     private introTimer: number = 1.1;
     private time: number = 0;
@@ -173,20 +188,25 @@ export class DuelScene implements Scene {
     private hudTimer: number = 0;
     private readonly floor: FloorDef;
 
-    constructor(private readonly game: Game, private readonly spawn: MonsterSpawn, private readonly isBoss: boolean,
-                private readonly onEnd: (summary: CombatSummary) => void) {
+    constructor(private readonly game: Game, private readonly spawn: MonsterSpawn, private readonly onEnd: (summary: CombatSummary) => void) {
         const save: SaveData = game.save as SaveData;
         const run: RunData = save.run as RunData;
-        this.music = isBoss ? MusicTrack.Boss : MusicTrack.Combat;
         this.monster = MONSTERS[spawn.key];
-        this.behaviour = realTimeBehaviour(this.monster);
+        this.isBoss = this.monster.boss;
+        this.music = this.isBoss ? MusicTrack.Boss : MusicTrack.Combat;
+        const aggression: number = AGGRESSION_PER_FLOOR * (run.floor - 1) + (this.isBoss ? 0.15 : 0);
+        const base: RealTimeBehaviour = realTimeBehaviour(this.monster);
+        this.behaviour = {...base, speed: base.speed * (1 + aggression), cooldown: base.cooldown / (1 + aggression), windUp: base.windUp / (1 + aggression * 0.5)};
         const max: StatBlock = computeHeroStats(save);
         this.hero = createHeroCombatant(tr(CLASSES[save.hero.classKey].name), max, run.hp, run.mana);
         this.enemy = createEnemyCombatant(this.monster, spawn.armored, save.challenge);
+        this.enemy.stats = {...this.enemy.stats, hp: Math.round(this.enemy.stats.hp * REAL_TIME_ENEMY_HP)};
+        this.enemy.hp = this.enemy.stats.hp;
         this.maxCharges = dashCharges(save);
         this.charges = this.maxCharges;
         this.floor = floorDef(run.floor);
-        this.abilities = [...CLASSES[save.hero.classKey].abilities];
+        this.basicMultiplier = basicAttackMultiplier(save);
+        this.bowWielder = heroWeaponType(save.hero.classKey) === WeaponType.Bow;
     }
 
     private get save(): SaveData {
@@ -206,19 +226,13 @@ export class DuelScene implements Scene {
     }
 
     public onEscape(): void {
-        const win: WindowHandle = this.game.ui.openWindow({title: t("paused"), cls: "window-small"});
-        win.body.append(el("div", {style: {display: "flex", flexDirection: "column", gap: "8px"}}, [
-            button(t("resume"), () => win.close(), {cls: "btn-primary"}),
-            button(t("options"), () => openOptions(this.game)),
-            button(t("flee"), () => {
-                win.close();
-                if (this.isBoss) {
-                    this.game.ui.toast(t("cannotFlee"), ToastKind.Bad);
-                    return;
-                }
-                this.end({outcome: CombatOutcome.Fled, hp: this.hero.hp, mana: this.hero.mana});
-            })
-        ]));
+        openBattlePause(this.game, {label: t("flee"), onClick: () => {
+            if (this.isBoss) {
+                this.game.ui.toast(t("cannotFlee"), ToastKind.Bad);
+                return;
+            }
+            this.end({outcome: CombatOutcome.Fled, hp: this.hero.hp, mana: this.hero.mana});
+        }});
     }
 
     // ------------------------------------------------------------ HUD
@@ -228,24 +242,9 @@ export class DuelScene implements Scene {
         this.hudEl = el("div", {cls: "hud-top"});
         this.game.ui.hud.append(this.hudEl);
         this.game.ui.hud.append(el("div", {cls: "hud-controls", text: t("realTimeHelp")}));
-        const bar: HTMLElement = el("div", {style: {position: "fixed", left: "50%", bottom: "38px", transform: "translateX(-50%)", display: "flex", gap: "8px", pointerEvents: "auto"}});
-        this.hotbar = this.abilities.map((key: AbilityKey, index: number) => {
-            const def: AbilityDef = ABILITIES[key];
-            const shade: HTMLElement = el("div", {style: {position: "absolute", left: "0", right: "0", bottom: "0", height: "0%", background: "rgba(10,8,16,0.72)", borderRadius: "8px"}});
-            const label: HTMLElement = el("div", {style: {position: "absolute", left: "0", right: "0", top: "50%", transform: "translateY(-50%)", textAlign: "center", fontWeight: "800", fontSize: "16px", color: "#fff", textShadow: "0 1px 3px #000"}});
-            const root: HTMLElement = el("div", {title: tr(def.name), style: {position: "relative", width: "52px", height: "52px", cursor: "pointer"}}, [
-                abilityIconEl(key, 52), shade, label,
-                el("div", {text: String(index + 1), style: {position: "absolute", left: "3px", top: "1px", fontWeight: "800", fontSize: "13px", color: "#ffe066", textShadow: "0 1px 2px #000"}}),
-                el("div", {text: String(def.manaCost), style: {position: "absolute", right: "3px", bottom: "1px", fontWeight: "700", fontSize: "11px", color: "#74c0fc", textShadow: "0 1px 2px #000"}})
-            ]);
-            root.addEventListener("mousedown", (e: MouseEvent) => {
-                e.stopPropagation();
-                this.useAbility(index);
-            });
-            bar.append(root);
-            return {root: root, shade: shade, label: label};
-        });
-        this.game.ui.hud.append(bar);
+        this.actionBar = new ActionBarHud(() => this.save, (index: number) => this.useSlot(index), () => this.game.saveGame());
+        this.actionBar.refresh();
+        this.game.ui.hud.append(this.actionBar.element);
         this.refreshHud();
     }
 
@@ -253,12 +252,7 @@ export class DuelScene implements Scene {
         if (!this.hudEl) {
             return;
         }
-        const bar: (cls: string, value: number, max: number, label: string) => HTMLElement = (cls: string, value: number, max: number, label: string): HTMLElement =>
-            el("div", {cls: "bar " + cls}, [el("div", {cls: "fill", style: {width: Math.max(0, Math.min(100, value / Math.max(1, max) * 100)) + "%"}}), el("div", {cls: "bar-text", text: label})]);
-        let pips: string = "";
-        for (let i: number = 0; i < this.maxCharges; i++) {
-            pips += i < this.charges ? "◆" : "◇";
-        }
+        const pips: string = RealTimeHero.pips(this);
         const focusFull: boolean = this.focus >= 1;
         this.hudEl.replaceChildren(
             el("div", {cls: "hud-panel"}, [
@@ -276,29 +270,21 @@ export class DuelScene implements Scene {
                 bar("hp", this.enemy.hp, this.enemy.stats.hp, Math.ceil(this.enemy.hp) + "/" + this.enemy.stats.hp)
             ])
         );
-        this.abilities.forEach((key: AbilityKey, index: number) => {
-            const slot: HotbarSlot | undefined = this.hotbar[index];
-            if (!slot) {
-                return;
-            }
-            const cd: number = this.cooldowns[index];
-            const total: number = abilityCooldown(ABILITIES[key]);
-            const noMana: boolean = this.hero.mana < ABILITIES[key].manaCost;
-            slot.shade.style.height = (cd > 0 ? Math.min(100, cd / total * 100) : noMana ? 100 : 0) + "%";
-            slot.label.textContent = cd > 0 ? cd.toFixed(1) : "";
-            slot.root.style.filter = noMana ? "grayscale(0.7)" : "";
-        });
+        if (this.actionBar) {
+            this.actionBar.update({
+                cooldownOf: (slot: ActionBarSlot) => slot.ability
+                    ? {left: this.cooldowns.get(slot.ability) ?? 0, total: abilityCooldown(effectiveAbility(this.save, slot.ability))}
+                    : {left: this.potionCooldown, total: POTION_COOLDOWN},
+                mana: this.hero.mana
+            });
+        }
     }
 
     // ------------------------------------------------------------ update
 
     public update(dt: number): void {
         this.time += dt;
-        this.floaters = this.floaters.filter((f: Floater) => {
-            f.life -= dt;
-            f.y -= dt * 40;
-            return f.life > 0;
-        });
+        this.floaters.update(dt);
         this.hudTimer -= dt;
         if (this.hudTimer <= 0) {
             this.hudTimer = 0.1;
@@ -334,37 +320,32 @@ export class DuelScene implements Scene {
         this.aim = {x: ax / len, y: ay / len};
 
         this.meleeTimer -= dt;
-        this.iframes -= dt;
+        RealTimeHero.tick(this, dt, DASH);
         this.swing = Math.max(0, this.swing - dt * 3.5);
         this.flash = Math.max(0, this.flash - dt * 4);
-        this.hero.mana = Math.min(this.hero.stats.mana, this.hero.mana + this.hero.stats.mana * 0.04 * dt);
-        if (this.charges < this.maxCharges) {
-            this.rechargeTimer += dt;
-            if (this.rechargeTimer >= DASH_RECHARGE) {
-                this.rechargeTimer = 0;
-                this.charges++;
-            }
-        }
+        this.hero.mana = Math.min(this.hero.stats.mana, this.hero.mana + this.hero.stats.mana * MANA_REGEN * dt);
         for (const g of this.dashTrail) {
             g.life -= dt;
         }
         this.dashTrail = this.dashTrail.filter((g: {life: number}) => g.life > 0);
         if (this.dashTimer > 0) {
             this.dashTimer -= dt;
-            this.moveHero(this.dashDir.x * DASH_SPEED * dt, this.dashDir.y * DASH_SPEED * dt);
+            this.moveHero(this.dashDir.x * DASH.speed * dt, this.dashDir.y * DASH.speed * dt);
             this.dashTrail.push({x: this.x, y: this.y, life: 0.25, facing: this.facing});
             // Dash slash: cutting through (or right past) the monster hits it once.
             if (!this.dashHit && this.state === DuelState.Fighting && Math.hypot(this.ex - this.x, this.ey - this.y) < MELEE_RANGE * 0.8 + 18 * this.monster.size) {
                 this.dashHit = true;
                 this.swing = 1;
                 this.spells.cast(AbilityKey.Slash, Element.Neutral, this.heroCenter(), this.enemyCenter(), SPRITE_SCALE * 0.9, 1);
-                this.hitEnemy(rollDamage(this.hero, this.enemy, DamageType.Physical, Element.Neutral, 0.8), this.dashDir.x, this.dashDir.y);
+                this.hitEnemy(rollDamage(this.hero, this.enemy, DamageType.Physical, Element.Neutral, DASH_SLASH_POWER * this.basicMultiplier), this.dashDir.x, this.dashDir.y);
             }
         } else {
             this.moving = axis.x !== 0 || axis.y !== 0;
             if (this.moving) {
                 this.walk += dt * 12;
-                this.moveHero(axis.x * HERO_SPEED * dt, axis.y * HERO_SPEED * dt);
+                // Drawing the bow slows you down, like casting.
+                const speed: number = this.bowWielder && this.swing > 0 ? HERO_SPEED * BOW_MOVE_MULT : HERO_SPEED;
+                this.moveHero(axis.x * speed * dt, axis.y * speed * dt);
                 if (Math.abs(axis.x) > Math.abs(axis.y) * 0.9) {
                     this.view = PuppetView.Side;
                 } else {
@@ -373,12 +354,8 @@ export class DuelScene implements Scene {
             } else {
                 this.view = PuppetView.Side;
             }
-            if (input.wasPressed("Space", "ShiftLeft") && this.charges > 0) {
-                this.charges--;
-                this.dashTimer = DASH_TIME;
-                this.iframes = IFRAME_TIME;
-                // Forward: where you walk, or straight at the monster when standing still.
-                this.dashDir = this.moving ? {x: axis.x, y: axis.y} : {x: this.aim.x, y: this.aim.y};
+            // Forward: where you walk, or straight at the monster when standing still.
+            if (input.wasPressed("Space", "ShiftLeft") && RealTimeHero.startDash(this, this.moving ? axis : this.aim, DASH)) {
                 this.dashHit = false;
                 this.game.audio.play(Sfx.Dash);
             }
@@ -396,30 +373,32 @@ export class DuelScene implements Scene {
             this.attackBuffer = 0;
             this.melee();
         }
-        const keys: string[] = ["Digit1", "Digit2", "Digit3", "Digit4"];
-        keys.forEach((code: string, index: number) => {
-            if (input.wasPressed(code, "Numpad" + (index + 1))) {
-                this.useAbility(index);
-            }
-        });
+        const slot: number = pressedSlot(input);
+        if (slot >= 0) {
+            this.useSlot(slot);
+        }
         if (input.wasPressed("KeyF") && this.focus >= 1) {
             this.switchToTurns();
         }
     }
 
     private moveHero(dx: number, dy: number): void {
-        let nx: number = this.x + dx;
-        let ny: number = this.y + dy;
-        const d: number = Math.hypot(nx / ARENA_W, ny / ARENA_H);
-        if (d > 0.94) {
-            nx = nx / d * 0.94;
-            ny = ny / d * 0.94;
-        }
-        this.x = nx;
-        this.y = ny;
+        RealTimeHero.move(this, dx, dy, ARENA_W, ARENA_H);
+    }
+
+    private shootArrow(): void {
+        this.meleeTimer = BOW_COOLDOWN;
+        this.swing = 1;
+        this.game.audio.play(Sfx.Swing);
+        this.spells.shootArrow(this.heroCenter(), this.enemyCenter(), SPRITE_SCALE * 0.9);
+        this.arrowHits.push(this.time + ARROW_IMPACT_DELAY);
     }
 
     private melee(): void {
+        if (this.bowWielder) {
+            this.shootArrow();
+            return;
+        }
         this.meleeTimer = MELEE_COOLDOWN;
         this.swing = 1;
         this.game.audio.play(Sfx.Swing);
@@ -432,7 +411,7 @@ export class DuelScene implements Scene {
             dist = Math.hypot(this.ex - this.x, this.ey - this.y);
         }
         if (dist <= reach) {
-            this.hitEnemy(rollDamage(this.hero, this.enemy, DamageType.Physical, Element.Neutral, 1.0), this.aim.x, this.aim.y);
+            this.hitEnemy(rollDamage(this.hero, this.enemy, DamageType.Physical, Element.Neutral, MELEE_POWER * this.basicMultiplier), this.aim.x, this.aim.y);
         }
     }
 
@@ -446,12 +425,58 @@ export class DuelScene implements Scene {
         return {x: this.ex, y: this.ey - 42 * this.monster.size};
     }
 
-    private useAbility(slot: number): void {
-        const key: AbilityKey | undefined = this.abilities[slot];
-        if (!key || this.state !== DuelState.Fighting || this.cooldowns[slot] > 0) {
+    /** Action bar slot 1-8: an ability or a potion. */
+    private useSlot(index: number): void {
+        const slot: ActionBarSlot | null = syncActionBar(this.save)[index] ?? null;
+        if (!slot) {
             return;
         }
-        const def: AbilityDef = ABILITIES[key];
+        if (slot.kind === ActionBarSlot.Kind.Item && slot.item) {
+            this.drinkPotion(slot.item);
+        } else if (slot.ability) {
+            this.useAbility(slot.ability);
+        }
+    }
+
+    private drinkPotion(key: ItemKey): void {
+        const def: ItemDef = ITEMS[key];
+        if (this.state !== DuelState.Fighting || !def.heal) {
+            return;
+        }
+        if (this.potionCooldown > 0) {
+            this.game.audio.play(Sfx.Error);
+            this.floaters.push({text: t("potionCooldown"), x: this.x, y: this.y - 80, life: 0.9, color: "#ffd43b"});
+            return;
+        }
+        if (!removeItem(this.save, key, 1)) {
+            this.game.audio.play(Sfx.Error);
+            this.floaters.push({text: t("noUsableItems"), x: this.x, y: this.y - 80, life: 0.9, color: "#ffd43b"});
+            return;
+        }
+        const mult: number = potionMultiplier(this.save);
+        this.potionCooldown = POTION_COOLDOWN;
+        this.game.audio.play(Sfx.Heal);
+        if (def.heal.hp) {
+            this.healHero(Math.round(def.heal.hp * mult));
+        }
+        if (def.heal.mana) {
+            this.hero.mana = Math.min(this.hero.stats.mana, this.hero.mana + Math.round(def.heal.mana * mult));
+            this.floaters.push({text: "+" + Math.round(def.heal.mana * mult), x: this.x + 18, y: this.y - 60, life: 0.9, color: "#74c0fc"});
+        }
+        if (def.heal.cureStatus) {
+            this.flash = 0;
+        }
+        this.game.saveGame();
+        if (this.actionBar) {
+            this.actionBar.refresh();
+        }
+    }
+
+    private useAbility(key: AbilityKey): void {
+        if (this.state !== DuelState.Fighting || (this.cooldowns.get(key) ?? 0) > 0) {
+            return;
+        }
+        const def: AbilityDef = effectiveAbility(this.save, key);
         if (this.hero.mana < def.manaCost) {
             this.game.audio.play(Sfx.Error);
             this.floaters.push({text: t("notEnoughMana"), x: this.x, y: this.y - 80, life: 0.8, color: "#74c0fc"});
@@ -464,7 +489,7 @@ export class DuelScene implements Scene {
             if (key === AbilityKey.Pounce || key === AbilityKey.CloudStrike) {
                 // Gap closers: leap at the enemy.
                 this.dashDir = {x: this.aim.x, y: this.aim.y};
-                this.dashTimer = Math.min(0.35, (dist - reach * 0.6) / DASH_SPEED);
+                this.dashTimer = Math.min(0.35, (dist - reach * 0.6) / DASH.speed);
                 this.iframes = this.dashTimer;
             } else {
                 this.game.audio.play(Sfx.Error);
@@ -473,7 +498,7 @@ export class DuelScene implements Scene {
             }
         }
         this.hero.mana -= def.manaCost;
-        this.cooldowns[slot] = abilityCooldown(def);
+        this.cooldowns.set(key, abilityCooldown(def));
         const from: {x: number; y: number} = this.heroCenter();
         if (def.kind === AbilityKind.Damage) {
             const hits: number = def.hits ?? 1;
@@ -511,9 +536,17 @@ export class DuelScene implements Scene {
     }
 
     private updateAbilities(dt: number): void {
-        this.cooldowns = this.cooldowns.map((c: number) => Math.max(0, c - dt));
+        for (const [key, left] of this.cooldowns) {
+            this.cooldowns.set(key, Math.max(0, left - dt));
+        }
+        this.potionCooldown = Math.max(0, this.potionCooldown - dt);
         this.timedBuffs = this.timedBuffs.filter((b: TimedBuff) => b.until > this.time);
         this.hero.buffs = this.timedBuffs.map((b: TimedBuff) => ({stat: b.stat, amount: b.amount, turns: 1, source: "rt"}));
+        const landed: number = this.arrowHits.filter((at: number) => at <= this.time).length;
+        this.arrowHits = this.arrowHits.filter((at: number) => at > this.time);
+        for (let i: number = 0; i < landed && this.state === DuelState.Fighting; i++) {
+            this.hitEnemy(rollDamage(this.hero, this.enemy, DamageType.Physical, Element.Neutral, BOW_POWER * this.basicMultiplier), this.aim.x, this.aim.y);
+        }
         const due: PendingHit[] = this.pendingHits.filter((h: PendingHit) => h.at <= this.time);
         this.pendingHits = this.pendingHits.filter((h: PendingHit) => h.at > this.time);
         for (const hit of due) {
@@ -552,18 +585,23 @@ export class DuelScene implements Scene {
     private hitEnemy(roll: DamageRoll, nx: number, ny: number): void {
         this.enemy.hp -= roll.amount;
         this.enemyFlash = 1;
-        // Heavy monsters barely move when hit.
-        const knock: number = this.behaviour.meleePower > 1.1 ? 60 : 200;
+        // Heavy monsters barely move when hit, and nobody is pushed out of their own attack.
+        const committed: boolean = this.enemyState === EnemyState.WindUp || this.enemyState === EnemyState.Lunge;
+        const knock: number = committed ? 0 : this.behaviour.meleePower > 1.1 ? KNOCKBACK_HEAVY : KNOCKBACK_LIGHT;
         this.knockX = nx * knock;
         this.knockY = ny * knock;
         this.focus = Math.min(1, this.focus + FOCUS_PER_HIT);
         this.floaters.push({text: roll.amount + (roll.crit ? "!" : ""), x: this.ex, y: this.ey - 60, life: 0.8, color: roll.crit ? "#ffd43b" : "#fff"});
         this.game.audio.play(roll.crit ? Sfx.Crit : Sfx.Hit);
         if (this.enemy.hp <= 0) {
-            this.enemy.hp = 0;
-            this.game.audio.play(Sfx.Victory);
-            this.end({outcome: CombatOutcome.Won, hp: this.hero.hp, mana: this.hero.mana, rewardBonus: REAL_TIME_REWARD_BONUS});
+            this.killEnemy();
         }
+    }
+
+    private killEnemy(): void {
+        this.enemy.hp = 0;
+        this.game.audio.play(Sfx.Victory);
+        this.end({outcome: CombatOutcome.Won, hp: this.hero.hp, mana: this.hero.mana, rewardBonus: REAL_TIME_REWARD_BONUS});
     }
 
     /** An enemy attack reaches the hero: dodged while dashing (perfect dodge fills the Focus), otherwise it hurts. */
@@ -574,6 +612,7 @@ export class DuelScene implements Scene {
             }
             return;
         }
+        amount = Math.max(1, Math.round(amount * REAL_TIME_ENEMY_DAMAGE));
         this.hero.hp -= amount;
         this.iframes = 0.5;
         this.flash = 1;
@@ -604,9 +643,7 @@ export class DuelScene implements Scene {
                 this.enemyFlash = 0.6;
                 this.floaters.push({text: String(amount), x: this.ex + 16, y: this.ey - 70, life: 0.7, color: dot.color});
                 if (this.enemy.hp <= 0) {
-                    this.enemy.hp = 0;
-                    this.game.audio.play(Sfx.Victory);
-                    this.end({outcome: CombatOutcome.Won, hp: this.hero.hp, mana: this.hero.mana, rewardBonus: REAL_TIME_REWARD_BONUS});
+                    this.killEnemy();
                     return;
                 }
             }
@@ -614,30 +651,29 @@ export class DuelScene implements Scene {
         this.dots = this.dots.filter((d: Dot) => d.next <= d.until);
         const prevX: number = this.ex;
         const prevY: number = this.ey;
-        if (this.enemyStun > 0) {
-            this.enemyStun -= dt;
-            this.ex += this.knockX * dt;
-            this.ey += this.knockY * dt;
-            this.knockX *= Math.pow(0.002, dt);
-            this.knockY *= Math.pow(0.002, dt);
-            this.enemyMoving = false;
-            return;
-        }
-
         this.ex += this.knockX * dt;
         this.ey += this.knockY * dt;
         this.knockX *= Math.pow(0.002, dt);
         this.knockY *= Math.pow(0.002, dt);
+        if (this.enemyStun > 0) {
+            this.enemyStun -= dt;
+            this.enemyMoving = false;
+            return;
+        }
+
         const dx: number = this.x - this.ex;
         const dy: number = this.y - this.ey;
         const dist: number = Math.hypot(dx, dy) || 1;
         const reach: number = 40 + 16 * this.monster.size;
+        const strikeReach: number = this.strikeReach();
         this.enemyTimer -= dt;
         switch (this.enemyState) {
             case EnemyState.Approach: {
                 // Melee monsters press right into you: touching them hurts.
                 const wanted: number = b.preferredRange > 0 ? b.preferredRange : reach * 0.45;
-                const step: number = b.speed * (this.enemy.hp < this.enemy.stats.hp / 2 && this.isBoss ? 1.3 : 1) * dt;
+                // Melee monsters sprint after a hero who keeps them at a distance (archers can't kite forever).
+                const chase: number = b.preferredRange === 0 && dist > strikeReach * 1.1 ? CHASE_SPEED_MULT : 1;
+                const step: number = b.speed * chase * (this.enemy.hp < this.enemy.stats.hp / 2 && this.isBoss ? 1.3 : 1) * dt;
                 if (dist > wanted) {
                     this.ex += dx / dist * step;
                     this.ey += dy / dist * step;
@@ -645,7 +681,7 @@ export class DuelScene implements Scene {
                     this.ex -= dx / dist * step * 0.7;
                     this.ey -= dy / dist * step * 0.7;
                 }
-                const inRange: boolean = b.preferredRange > 0 || b.lungeSpeed > 0 ? dist < Math.max(b.preferredRange * 1.3, 260) : dist < reach * 1.2;
+                const inRange: boolean = b.preferredRange > 0 || b.lungeSpeed > 0 ? dist < Math.max(b.preferredRange * 1.3, 260) : dist < strikeReach * 1.15;
                 if (this.enemyTimer <= 0 && inRange) {
                     this.enemyState = EnemyState.WindUp;
                     this.enemyTimer = b.windUp;
@@ -664,7 +700,13 @@ export class DuelScene implements Scene {
                         this.enemyState = EnemyState.Lunge;
                         this.enemyTimer = 0.22;
                     } else {
-                        if (dist < reach * 1.25) {
+                        if (dist < strikeReach * LEAP_REACH) {
+                            // Stepping back is not enough: the swing leaps at you. Only the dash dodges it.
+                            if (dist > strikeReach) {
+                                const leap: number = dist - strikeReach * 0.8;
+                                this.ex += dx / dist * leap;
+                                this.ey += dy / dist * leap;
+                            }
                             this.attackHero(rollDamage(this.enemy, this.hero, DamageType.Physical, Element.Neutral, b.meleePower * 0.9).amount);
                         } else if (this.dashTimer > 0 && dist < reach * 3) {
                             // Dashed out of the swing at the last moment: that is the perfect dodge.
@@ -677,7 +719,7 @@ export class DuelScene implements Scene {
             case EnemyState.Lunge:
                 this.ex += this.lungeDir.x * b.lungeSpeed * dt;
                 this.ey += this.lungeDir.y * b.lungeSpeed * dt;
-                if (dist < reach) {
+                if (dist < strikeReach * 0.8) {
                     this.attackHero(rollDamage(this.enemy, this.hero, DamageType.Physical, Element.Neutral, b.meleePower).amount);
                     this.recover();
                 } else if (this.enemyTimer <= 0) {
@@ -701,11 +743,14 @@ export class DuelScene implements Scene {
         if (this.enemyMoving) {
             this.enemyWalk += dt * 10;
         }
-        const d: number = Math.hypot(this.ex / ARENA_W, this.ey / ARENA_H);
-        if (d > 0.94) {
-            this.ex = this.ex / d * 0.94;
-            this.ey = this.ey / d * 0.94;
-        }
+        const inside: Vec2 = clampToArena(this.ex, this.ey, ARENA_W, ARENA_H);
+        this.ex = inside.x;
+        this.ey = inside.y;
+    }
+
+    /** Monster swings reach about as far as yours: you cannot poke them from just outside their range. */
+    private strikeReach(): number {
+        return MELEE_RANGE * 0.92 + 18 * this.monster.size;
     }
 
     private recover(): void {
@@ -719,27 +764,21 @@ export class DuelScene implements Scene {
         for (let i: number = 0; i < n; i++) {
             const a: number = base + (i - (n - 1) / 2) * 0.28;
             const roll: DamageRoll = rollDamage(this.enemy, this.hero, DamageType.Magical, this.monster.element, 0.55);
-            this.bolts.push({x: this.ex, y: this.ey - 40, vx: Math.cos(a) * 230, vy: Math.sin(a) * 230, life: 3, friendly: false, damage: roll.amount, color: this.monster.colors.accent});
+            this.bolts.push({x: this.ex, y: this.ey - 40, vx: Math.cos(a) * 230, vy: Math.sin(a) * 230, life: 3, damage: roll.amount, color: this.monster.colors.accent});
         }
         this.game.audio.play(Sfx.Magic);
     }
 
     private updateBolts(dt: number): void {
         for (const bolt of [...this.bolts]) {
-            bolt.x += bolt.vx * dt;
-            bolt.y += bolt.vy * dt;
-            bolt.life -= dt;
+            RealTimeBolt.advance(bolt, dt);
             let consumed: boolean = bolt.life <= 0 || Math.hypot(bolt.x / ARENA_W, (bolt.y + 40) / ARENA_H) > 1.05;
-            if (bolt.friendly && !consumed && Math.hypot(this.ex - bolt.x, this.ey - 40 - bolt.y) < 34 * this.monster.size) {
-                const len: number = Math.hypot(bolt.vx, bolt.vy) || 1;
-                consumed = true;
-                this.hitEnemy(rollDamage(this.hero, this.enemy, DamageType.Magical, Element.Neutral, 1.2), bolt.vx / len, bolt.vy / len);
-            } else if (!bolt.friendly && !consumed && Math.hypot(this.x - bolt.x, this.y - 40 - bolt.y) < 22) {
+            if (!consumed && Math.hypot(this.x - bolt.x, this.y - 40 - bolt.y) < 22) {
                 consumed = true;
                 this.attackHero(bolt.damage);
             }
             if (consumed) {
-                this.bolts = this.bolts.filter((b: Bolt) => b !== bolt);
+                this.bolts = this.bolts.filter((b: RealTimeBolt) => b !== bolt);
             }
             if (this.state === DuelState.Over) {
                 return;
@@ -754,7 +793,7 @@ export class DuelScene implements Scene {
         const run: RunData = this.save.run as RunData;
         run.hp = Math.max(1, Math.round(this.hero.hp));
         run.mana = Math.round(this.hero.mana);
-        this.game.setScene(new CombatScene(this.game, this.spawn, this.isBoss, this.onEnd, {enemyHp: this.enemy.hp, focus: true}));
+        this.game.setScene(new CombatScene(this.game, this.spawn, this.onEnd, {enemyHp: this.enemy.hp / REAL_TIME_ENEMY_HP}));
     }
 
     private end(summary: CombatSummary): void {
@@ -800,13 +839,6 @@ export class DuelScene implements Scene {
             light.addColorStop(1, "rgba(0,0,0,0.6)");
             ctx.fillStyle = light;
             ctx.fill();
-        } else {
-            ellipsePath(ctx, 0, 0, ARENA_W, ARENA_H);
-            const g: CanvasGradient = ctx.createRadialGradient(0, 0, 30, 0, 0, ARENA_W);
-            g.addColorStop(0, shade(this.floor.floorColor, 0.18));
-            g.addColorStop(1, shade(this.floor.floorAlt, -0.25));
-            ctx.fillStyle = g;
-            ctx.fill();
         }
         ellipsePath(ctx, 0, 0, ARENA_W, ARENA_H);
         ctx.strokeStyle = shade(this.floor.wallTop, -0.2);
@@ -822,7 +854,7 @@ export class DuelScene implements Scene {
         // Enemy telegraph ring.
         if (this.enemyState === EnemyState.WindUp) {
             const k: number = 1 - Math.max(0, this.enemyTimer) / Math.max(0.01, this.behaviour.windUp);
-            const r: number = this.behaviour.volley > 0 ? 30 : (40 + 16 * this.monster.size) * 1.25;
+            const r: number = this.behaviour.volley > 0 ? 30 : this.strikeReach() * LEAP_REACH;
             ellipsePath(ctx, this.ex, this.ey, r, r * 0.5);
             ctx.strokeStyle = rgba("#ff6b6b", 0.35 + k * 0.5);
             ctx.lineWidth = 3;
@@ -869,17 +901,9 @@ export class DuelScene implements Scene {
             glow(ctx, this.ex, this.ey - 40, 30, dot.color, 0.25 + Math.sin(this.time * 10) * 0.1);
         }
         for (const bolt of this.bolts) {
-            glow(ctx, bolt.x, bolt.y, 22, bolt.color, 0.8);
-            ctx.fillStyle = "#fff";
-            ctx.beginPath();
-            ctx.arc(bolt.x, bolt.y, 5, 0, Math.PI * 2);
-            ctx.fill();
+            RealTimeBolt.draw(ctx, bolt);
         }
-        for (const f of this.floaters) {
-            ctx.globalAlpha = Math.min(1, f.life * 2);
-            drawText(ctx, f.text, f.x, f.y, 18, f.color);
-        }
-        ctx.globalAlpha = 1;
+        this.floaters.draw(ctx);
         ctx.restore();
         if (this.state === DuelState.Intro) {
             drawText(ctx, t("modeRealTime") + "!", w / 2, h * 0.24, 40, "#f5c542");

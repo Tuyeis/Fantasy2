@@ -2,10 +2,10 @@ import {MusicTrack, Sfx} from "../core/audio-engine";
 import {Game, Scene} from "../core/game";
 import {t, tr} from "../core/i18n";
 import {Input} from "../core/input";
-import {randFloat} from "../core/rng";
+import {clamp, randFloat} from "../core/rng";
 import {SaveData} from "../core/save-store";
-import {button, el, ToastKind, WindowHandle} from "../core/ui";
-import {AbilityDef, AbilityKey, ABILITIES, describeAbility} from "../data/abilities";
+import {button, el, ToastKind} from "../core/ui";
+import {AbilityDef, AbilityKey, describeAbility} from "../data/abilities";
 import {CompanionKey, COMPANIONS} from "../data/companions";
 import {MonsterSpawn, RunData} from "../data/dungeon-types";
 import {Element, ELEMENTS} from "../data/element";
@@ -20,15 +20,22 @@ import {
 } from "../logic/combat-engine";
 import {Combatant, Side, StatusInstance} from "../logic/combat-math";
 import {companionPowerMultiplier, computeHeroStats, potionMultiplier} from "../logic/hero-stats";
-import {itemName, ownedStacks, removeItem, stackCount} from "../logic/inventory";
+import {abilitySlots, basicAttackMultiplier, effectiveAbility} from "../logic/talents";
+import {syncActionBar} from "../logic/action-bar";
+import {ActionBarSlot} from "../data/action-bar";
+import {countItem, itemName, ownedStacks, removeItem, stackCount} from "../logic/inventory";
 import {abilityIconEl} from "../render/ability-icons";
-import {drawClassHero} from "../render/class-hero";
+import {drawClassHero, heroWeaponType} from "../render/class-hero";
 import {battleBackdrop} from "../render/dungeon-art";
-import {fxImpactDelay, SpellFxLayer} from "../render/spell-fx";
-import {drawText, glow, rectPath, rgba, shade} from "../render/draw-utils";
+import {ARROW_IMPACT_DELAY, fxImpactDelay, SpellFxLayer} from "../render/spell-fx";
+import {WeaponType} from "../render/puppet/puppet-types";
+import {drawText, glow, rectPath, rgba} from "../render/draw-utils";
+import {FloaterLayer} from "../render/floater-layer";
 import {defaultPose} from "../render/hero-sprite";
 import {defaultMonsterPose, drawCompanion, drawMonster} from "../render/monster-sprite";
-import {openOptions} from "../windows/options-window";
+import {pressedSlot} from "./action-bar-hud";
+import {openBattlePause} from "./battle-pause";
+import {bar} from "./world-helpers";
 
 export interface CombatSummary {
     outcome: CombatOutcome;
@@ -38,11 +45,9 @@ export interface CombatSummary {
     rewardBonus?: number;
 }
 
-/** A turn-based fight that continues a real-time one (Focus switch). */
+/** A turn-based fight that continues a real-time one (Focus switch): the Focus freezes time, the enemy loses its first turn. */
 export interface CombatOpening {
     enemyHp: number;
-    /** The Focus freezes time: the enemy loses its first turn. */
-    focus: boolean;
 }
 
 enum Phase {
@@ -56,6 +61,8 @@ enum Phase {
 interface Lunge {
     actor: Side;
     progress: number;
+    /** Archers attack from where they stand (draw the bow) instead of running at the enemy. */
+    inPlace: boolean;
 }
 
 interface Projectile {
@@ -64,15 +71,6 @@ interface Projectile {
     progress: number;
     color: string;
     companionIndex: number;
-}
-
-interface Floater {
-    text: string;
-    x: number;
-    y: number;
-    life: number;
-    color: string;
-    size: number;
 }
 
 interface Particle {
@@ -88,14 +86,16 @@ export class CombatScene implements Scene {
     public readonly music: MusicTrack;
     private readonly engine: CombatEngine;
     private readonly monster: MonsterDef;
+    private readonly isBoss: boolean;
     private phase: Phase = Phase.Intro;
     private queue: CombatEvent[] = [];
     private timer: number = 0.9;
     private time: number = 0;
     private lunge: Lunge | null = null;
+    private readonly bowWielder: boolean;
     private projectile: Projectile | null = null;
     private readonly spells: SpellFxLayer = new SpellFxLayer();
-    private floaters: Floater[] = [];
+    private readonly floaters: FloaterLayer = new FloaterLayer({riseSpeed: 40, size: 26});
     private particles: Particle[] = [];
     private shake: number = 0;
     private heroFlash: number = 0;
@@ -117,27 +117,33 @@ export class CombatScene implements Scene {
     private logLines: {text: string; tone: CombatTone}[] = [];
     private pendingInput: boolean = false;
 
-    constructor(private readonly game: Game, private readonly spawn: MonsterSpawn, private readonly isBoss: boolean, private readonly onEnd: (summary: CombatSummary) => void,
+    constructor(private readonly game: Game, private readonly spawn: MonsterSpawn, private readonly onEnd: (summary: CombatSummary) => void,
                 private readonly opening: CombatOpening | undefined = undefined) {
-        this.music = isBoss ? MusicTrack.Boss : MusicTrack.Combat;
         const save: SaveData = game.save as SaveData;
-        const run: RunData = save.run as RunData;
+        // No run = town practice (training dummy): full HP/mana, no companions, potions are free.
+        const run: RunData | null = save.run;
         this.monster = MONSTERS[spawn.key];
+        this.isBoss = this.monster.boss;
+        this.bowWielder = heroWeaponType(save.hero.classKey) === WeaponType.Bow;
+        this.music = this.isBoss ? MusicTrack.Boss : MusicTrack.Combat;
         const max: StatBlock = computeHeroStats(save);
-        const hero: Combatant = createHeroCombatant(tr(CLASSES[save.hero.classKey].name), max, run.hp, run.mana);
+        const hero: Combatant = createHeroCombatant(tr(CLASSES[save.hero.classKey].name), max, run ? run.hp : max.hp, run ? run.mana : max.mana);
         const enemy: Combatant = createEnemyCombatant(this.monster, spawn.armored, save.challenge);
         if (opening) {
-            enemy.hp = Math.max(1, Math.min(enemy.stats.hp, opening.enemyHp));
-            if (opening.focus) {
-                enemy.statuses.push({key: StatusKey.Freeze, turns: 1});
-            }
+            enemy.hp = clamp(opening.enemyHp, 1, enemy.stats.hp);
+            enemy.statuses.push({key: StatusKey.Freeze, turns: 1});
         }
-        this.engine = new CombatEngine(hero, enemy, this.monster, [...run.companions], {
+        this.engine = new CombatEngine(hero, enemy, this.monster, run ? [...run.companions] : [], {
             heroLevel: save.hero.level,
             companionMultiplier: companionPowerMultiplier(save),
             potionMultiplier: potionMultiplier(save),
-            canFlee: !isBoss,
+            abilityDef: (key: AbilityKey) => effectiveAbility(save, key),
+            basicAttackPower: basicAttackMultiplier(save),
+            canFlee: !this.isBoss,
             consumeItem: (key: ItemKey) => {
+                if (!run) {
+                    return countItem(save, key) > 0;
+                }
                 const ok: boolean = removeItem(save, key, 1);
                 if (ok) {
                     this.game.saveGame();
@@ -148,7 +154,7 @@ export class CombatScene implements Scene {
         this.shownHeroHp = hero.hp;
         this.shownHeroMana = hero.mana;
         this.shownEnemyHp = enemy.hp;
-        this.companionHop = run.companions.map(() => 0);
+        this.companionHop = run ? run.companions.map(() => 0) : [];
     }
 
     private get save(): SaveData {
@@ -158,7 +164,7 @@ export class CombatScene implements Scene {
     public enter(): void {
         this.buildPanel();
         this.addLog(t("combatStart", {enemy: this.engine.enemy.name}), CombatTone.Special);
-        if (this.opening?.focus) {
+        if (this.opening) {
             this.addLog(t("focusSwitched"), CombatTone.Special);
         }
     }
@@ -177,11 +183,7 @@ export class CombatScene implements Scene {
             this.renderActions();
             return;
         }
-        const win: WindowHandle = this.game.ui.openWindow({title: t("paused"), cls: "window-small"});
-        win.body.append(el("div", {style: {display: "flex", flexDirection: "column", gap: "8px"}}, [
-            button(t("resume"), () => win.close(), {cls: "btn-primary"}),
-            button(t("options"), () => openOptions(this.game))
-        ]));
+        openBattlePause(this.game);
     }
 
     // ------------------------------------------------------------ DOM
@@ -203,12 +205,10 @@ export class CombatScene implements Scene {
             return;
         }
         const hero: Combatant = this.engine.hero;
-        const hpPct: number = Math.max(0, (this.shownHeroHp / hero.stats.hp) * 100);
-        const manaPct: number = Math.max(0, (this.shownHeroMana / Math.max(1, hero.stats.mana)) * 100);
         this.heroBoxEl.replaceChildren(
             el("div", {cls: "hud-name", text: hero.name + " · " + t("lvShort") + " " + this.save.hero.level}),
-            el("div", {cls: "bar hp"}, [el("div", {cls: "fill", style: {width: hpPct + "%"}}), el("div", {cls: "bar-text", text: t("hp") + " " + this.shownHeroHp + "/" + hero.stats.hp})]),
-            el("div", {cls: "bar mana"}, [el("div", {cls: "fill", style: {width: manaPct + "%"}}), el("div", {cls: "bar-text", text: t("mana") + " " + this.shownHeroMana + "/" + hero.stats.mana})]),
+            bar("hp", this.shownHeroHp, hero.stats.hp, t("hp") + " " + this.shownHeroHp + "/" + hero.stats.hp),
+            bar("mana", this.shownHeroMana, hero.stats.mana, t("mana") + " " + this.shownHeroMana + "/" + hero.stats.mana),
             el("div", {cls: "status-chips"}, this.heroStatuses.map((s: StatusKey) => el("span", {cls: "status-chip", text: tr(STATUSES[s].name), style: {background: STATUSES[s].color}}))),
             el("div", {cls: "companion-chips"}, this.engine.companions.map((c: CompanionKey) => el("span", {cls: "chip", text: tr(COMPANIONS[c].name)})))
         );
@@ -235,21 +235,24 @@ export class CombatScene implements Scene {
             }, {cls: "btn-small"})]));
             return;
         }
-        const abilityButtons: HTMLElement[] = CLASSES[this.save.hero.classKey].abilities.map((key: AbilityKey, index: number) => {
-            const def: AbilityDef = ABILITIES[key];
+        const abilityButtons: HTMLElement[] = abilitySlots(this.save).map((key: AbilityKey | null, index: number) => {
+            if (!key) {
+                return button("🔒 " + (index + 1), () => undefined, {cls: "ability-btn", disabled: true, title: t("abilityLocked")});
+            }
+            const def: AbilityDef = effectiveAbility(this.save, key);
             const b: HTMLButtonElement = button("", () => this.act({kind: HeroActionKind.Ability, ability: key}), {
                 cls: "ability-btn",
                 disabled: !enabled || this.shownHeroMana < def.manaCost,
                 title: describeAbility(def)
             });
             b.style.borderColor = ELEMENTS[def.element].color;
-            b.append(abilityIconEl(key, 26), el("span", {cls: "ability-text"}, [(index + 1) + ". " + tr(def.name), el("small", {text: def.manaCost + " " + t("mana") + " · " + tr(ELEMENTS[def.element].name)})]));
+            const barIndex: number = syncActionBar(this.save).findIndex((slot: ActionBarSlot | null) => slot?.ability === key);
+            b.append(abilityIconEl(key, 26), el("span", {cls: "ability-text"}, [(barIndex >= 0 ? (barIndex + 1) + ". " : "") + tr(def.name), el("small", {text: def.manaCost + " " + t("mana") + " · " + tr(ELEMENTS[def.element].name)})]));
             return b;
         });
         this.actionsEl.replaceChildren(el("div", {cls: "combat-actions"}, [
             button(t("attack") + " (A)", () => this.act({kind: HeroActionKind.Attack}), {cls: "btn-primary", disabled: !enabled, title: t("clickEnemyToAttack")}),
-            ...abilityButtons.slice(0, 3),
-            abilityButtons[3],
+            ...abilityButtons,
             button(t("items") + " (Q)", () => {
                 this.itemsOpen = true;
                 this.renderActions();
@@ -282,7 +285,7 @@ export class CombatScene implements Scene {
             return;
         }
         if (action.kind === HeroActionKind.Ability) {
-            const def: AbilityDef = ABILITIES[action.ability as AbilityKey];
+            const def: AbilityDef = effectiveAbility(this.save, action.ability as AbilityKey);
             if (this.engine.hero.mana < def.manaCost) {
                 this.game.audio.play(Sfx.Error);
                 this.game.ui.toast(t("notEnoughMana"), ToastKind.Bad);
@@ -368,11 +371,7 @@ export class CombatScene implements Scene {
                 this.projectile = null;
             }
         }
-        this.floaters = this.floaters.filter((f: Floater) => {
-            f.life -= dt;
-            f.y -= dt * 40;
-            return f.life > 0;
-        });
+        this.floaters.update(dt);
         this.particles = this.particles.filter((p: Particle) => {
             p.life -= dt;
             p.x += p.vx * dt;
@@ -421,17 +420,18 @@ export class CombatScene implements Scene {
 
     private handleKeys(): void {
         const input: Input = this.game.input;
-        const abilities: AbilityKey[] = CLASSES[this.save.hero.classKey].abilities;
+        const index: number = pressedSlot(input);
+        const slot: ActionBarSlot | null = index >= 0 ? syncActionBar(this.save)[index] : null;
+        if (slot) {
+            if (slot.kind === ActionBarSlot.Kind.Item && slot.item) {
+                this.act({kind: HeroActionKind.Item, item: slot.item});
+            } else if (slot.ability) {
+                this.act({kind: HeroActionKind.Ability, ability: slot.ability});
+            }
+            return;
+        }
         if (input.wasPressed("KeyA") || (input.mouseLeftClicked && this.clickOnEnemy(input.mouseX, input.mouseY))) {
             this.act({kind: HeroActionKind.Attack});
-        } else if (input.wasPressed("Digit1") && abilities[0]) {
-            this.act({kind: HeroActionKind.Ability, ability: abilities[0]});
-        } else if (input.wasPressed("Digit2") && abilities[1]) {
-            this.act({kind: HeroActionKind.Ability, ability: abilities[1]});
-        } else if (input.wasPressed("Digit3") && abilities[2]) {
-            this.act({kind: HeroActionKind.Ability, ability: abilities[2]});
-        } else if (input.wasPressed("Digit4") && abilities[3]) {
-            this.act({kind: HeroActionKind.Ability, ability: abilities[3]});
         } else if (input.wasPressed("KeyG")) {
             this.act({kind: HeroActionKind.Guard});
         } else if (input.wasPressed("KeyF")) {
@@ -451,10 +451,15 @@ export class CombatScene implements Scene {
                 this.addLog(e.text ?? "", e.tone ?? CombatTone.Neutral);
                 return 0.12;
             case CombatEventKind.Lunge:
-                this.lunge = {actor: e.actor as Side, progress: 0};
+                const archer: boolean = e.actor === Side.Hero && this.bowWielder;
+                this.lunge = {actor: e.actor as Side, progress: 0, inPlace: archer};
                 this.game.audio.play(Sfx.Swing);
                 if (e.ability) {
                     return this.castSpellFx(e);
+                }
+                if (archer) {
+                    this.spells.shootArrow(this.shotFrom(), this.shotTo(), this.unitScale());
+                    return ARROW_IMPACT_DELAY;
                 }
                 return 0.2;
             case CombatEventKind.Cast: {
@@ -550,16 +555,26 @@ export class CombatScene implements Scene {
     }
 
     /** Hero ability visuals; returns the delay before the damage event plays. */
+    /** Hero chest, where spells and arrows leave from. */
+    private shotFrom(): {x: number; y: number} {
+        const heroPos: {x: number; y: number} = this.heroPos();
+        return {x: heroPos.x + 18, y: heroPos.y - this.headOffset(Side.Hero) * 0.6};
+    }
+
+    /** Enemy chest, where spells and arrows land. */
+    private shotTo(): {x: number; y: number} {
+        const enemyPos: {x: number; y: number} = this.enemyPos();
+        return {x: enemyPos.x, y: enemyPos.y - this.headOffset(Side.Enemy) * 0.55};
+    }
+
     private castSpellFx(e: CombatEvent): number {
         const key: AbilityKey = e.ability as AbilityKey;
         if ((e.hitIndex ?? 0) > 0) {
             return 0.16;
         }
-        const heroPos: {x: number; y: number} = this.heroPos();
-        const enemyPos: {x: number; y: number} = this.enemyPos();
-        const from: {x: number; y: number} = {x: heroPos.x + 18, y: heroPos.y - this.headOffset(Side.Hero) * 0.6};
+        const from: {x: number; y: number} = this.shotFrom();
         const self: boolean = e.target === Side.Hero;
-        const to: {x: number; y: number} = self ? from : {x: enemyPos.x, y: enemyPos.y - this.headOffset(Side.Enemy) * 0.55};
+        const to: {x: number; y: number} = self ? from : this.shotTo();
         this.spells.cast(key, e.element ?? Element.Neutral, from, to, this.unitScale(), e.hits ?? 1);
         return self ? 0.35 : fxImpactDelay(key);
     }
@@ -596,7 +611,7 @@ export class CombatScene implements Scene {
     }
 
     private unitScale(): number {
-        return Math.max(1.6, Math.min(3, this.game.height / 300));
+        return clamp(this.game.height / 300, 1.6, 3);
     }
 
     public render(ctx: CanvasRenderingContext2D): void {
@@ -610,8 +625,6 @@ export class CombatScene implements Scene {
         const backdrop: HTMLImageElement | undefined = battleBackdrop(fd.floor, this.isBoss);
         if (backdrop) {
             this.drawBackdrop(ctx, backdrop, w, h);
-        } else {
-            this.drawProceduralBackdrop(ctx, fd, w, h);
         }
         if (this.isBoss) {
             glow(ctx, this.enemyPos().x, this.enemyPos().y - 80, 260, this.monster.colors.accent, 0.18 + Math.sin(this.time * 2) * 0.05);
@@ -652,46 +665,6 @@ export class CombatScene implements Scene {
         ctx.fillRect(-20, -20, w + 40, h + 40);
     }
 
-    private drawProceduralBackdrop(ctx: CanvasRenderingContext2D, fd: FloorDef, w: number, h: number): void {
-        // Back wall + floor
-        const wall: CanvasGradient = ctx.createLinearGradient(0, 0, 0, h * 0.45);
-        wall.addColorStop(0, shade(fd.wallColor, -0.3));
-        wall.addColorStop(1, fd.wallTop);
-        ctx.fillStyle = wall;
-        ctx.fillRect(-20, -20, w + 40, h * 0.45 + 20);
-        ctx.strokeStyle = "rgba(0,0,0,0.25)";
-        ctx.lineWidth = 2;
-        for (let row: number = 0; row < 6; row++) {
-            const y: number = h * 0.45 - row * 34;
-            ctx.beginPath();
-            ctx.moveTo(0, y);
-            ctx.lineTo(w, y);
-            ctx.stroke();
-            for (let x: number = (row % 2) * 40; x < w; x += 80) {
-                ctx.beginPath();
-                ctx.moveTo(x, y);
-                ctx.lineTo(x, y - 34);
-                ctx.stroke();
-            }
-        }
-        const floor: CanvasGradient = ctx.createLinearGradient(0, h * 0.45, 0, h);
-        floor.addColorStop(0, fd.floorColor);
-        floor.addColorStop(1, shade(fd.floorColor, -0.5));
-        ctx.fillStyle = floor;
-        ctx.fillRect(-20, h * 0.45, w + 40, h * 0.55 + 20);
-        for (const tx of [w * 0.12, w * 0.5, w * 0.88]) {
-            const flick: number = Math.sin(this.time * 9 + tx) * 3;
-            glow(ctx, tx, h * 0.26, 90 + flick, "#ff922b", 0.28);
-            ctx.fillStyle = "#ffa94d";
-            ctx.beginPath();
-            ctx.moveTo(tx - 7, h * 0.28);
-            ctx.quadraticCurveTo(tx, h * 0.28 - 22 + flick, tx + 7, h * 0.28);
-            ctx.fill();
-            ctx.fillStyle = "#6b4226";
-            ctx.fillRect(tx - 3, h * 0.28, 6, 16);
-        }
-    }
-
     private drawCombatBody(ctx: CanvasRenderingContext2D, w: number, h: number): void {
 
         const scale: number = this.unitScale();
@@ -701,7 +674,7 @@ export class CombatScene implements Scene {
         let enemyOffset: number = 0;
         let heroAttack: number = 0;
         if (this.lunge) {
-            const reach: number = Math.sin(this.lunge.progress * Math.PI) * (enemyPos.x - heroPos.x) * 0.55;
+            const reach: number = this.lunge.inPlace ? 0 : Math.sin(this.lunge.progress * Math.PI) * (enemyPos.x - heroPos.x) * 0.55;
             if (this.lunge.actor === Side.Hero) {
                 heroOffset = reach;
                 heroAttack = this.lunge.progress;
@@ -718,7 +691,7 @@ export class CombatScene implements Scene {
         // Hero
         ctx.globalAlpha = this.heroAlpha;
         drawClassHero(ctx, heroPos.x + heroOffset, heroPos.y, this.save.hero.classKey, defaultPose({
-            scale: scale, facing: 1, time: this.time, attack: heroAttack, flash: this.heroFlash, moving: this.lunge?.actor === Side.Hero, walk: this.time * 14
+            scale: scale, facing: 1, time: this.time, attack: heroAttack, flash: this.heroFlash, moving: this.lunge?.actor === Side.Hero && !this.lunge.inPlace, walk: this.time * 14
         }));
         if (this.engine.hero.guarding && this.phase !== Phase.Input) {
             ctx.strokeStyle = "rgba(116,192,252,0.7)";
@@ -769,11 +742,7 @@ export class CombatScene implements Scene {
             ctx.fillRect(part.x - 2.5, part.y - 2.5, 5, 5);
         }
         ctx.globalAlpha = 1;
-        for (const f of this.floaters) {
-            ctx.globalAlpha = Math.min(1, f.life * 2);
-            drawText(ctx, f.text, f.x, f.y, f.size, f.color);
-        }
-        ctx.globalAlpha = 1;
+        this.floaters.draw(ctx);
         ctx.restore();
 
         this.drawEnemyInfo(ctx);

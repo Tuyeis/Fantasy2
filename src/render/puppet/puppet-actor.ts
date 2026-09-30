@@ -1,3 +1,4 @@
+import {clamp01, ease} from "../draw-utils";
 import {LoadedItem, LoadedPart, LoadedView, Point, Puppet, PuppetAction, PuppetPose, PuppetView, WeaponType} from "./puppet-types";
 
 /**
@@ -41,31 +42,37 @@ interface BladeSample {
 /** Weapon scale relative to the character art (weapons are painted a bit small). */
 const WEAPON_SCALE: number = 1.2;
 
-const ease: (k: number) => number = (k: number): number => 1 - Math.pow(1 - k, 3);
-const clamp01: (k: number) => number = (k: number): number => Math.max(0, Math.min(1, k));
-
 /** How long each action lasts, in seconds (scenes convert their 0..1 progress with this). */
 export function actionDuration(puppet: Puppet, action: PuppetAction): number {
-    if (action === PuppetAction.Attack) {
-        const type: WeaponType | undefined = puppet.weapon?.type;
-        if (type === WeaponType.Bow) {
-            return 0.78;
-        }
-        if (type === WeaponType.Staff || type === WeaponType.Trident) {
-            return 0.8;
-        }
-        if (type === WeaponType.Pole) {
-            return 0.8;
-        }
-        return 0.6;
+    if (action !== PuppetAction.Attack) {
+        return 0;
     }
-    if (action === PuppetAction.Cast) {
-        return 1.3;
+    const type: WeaponType | undefined = puppet.weapon?.type;
+    if (type === WeaponType.Bow) {
+        return 0.78;
     }
-    if (action === PuppetAction.Dash) {
-        return 0.2;
+    if (type === WeaponType.Staff || type === WeaponType.Trident || type === WeaponType.Pole) {
+        return 0.8;
     }
-    return 0;
+    return 0.6;
+}
+
+/** Moves the origin to the hand, following the arm exactly (rotation AND fore-shortening) so the fist never slides on the handle. */
+function toHand(ctx: CanvasRenderingContext2D, arm: LoadedPart, hand: Point, armAngle: number, armSY: number): void {
+    ctx.translate(arm.pivotX, arm.pivotY);
+    ctx.rotate(armAngle);
+    ctx.scale(1, armSY);
+    ctx.translate(hand[0] - arm.pivotX, hand[1] - arm.pivotY);
+    ctx.scale(1, 1 / armSY);
+}
+
+/** White hit flash over an image that was just drawn at (x, y). */
+function flashOverlay(ctx: CanvasRenderingContext2D, white: HTMLCanvasElement, x: number, y: number, flash: number): void {
+    if (flash > 0) {
+        ctx.globalAlpha = flash;
+        ctx.drawImage(white, x, y);
+        ctx.globalAlpha = 1;
+    }
 }
 
 export class PuppetActor {
@@ -75,15 +82,8 @@ export class PuppetActor {
     private lastView: PuppetView | undefined = undefined;
     private bladeHist: BladeSample[] = [];
     private blade: {tip: Point; mid: Point} | undefined = undefined;
-    /** Device-pixel position of the weapon's head (staff orb, blade tip) after the last draw, for scene effects
-     *  (convert with the scene's ctx.getTransform().inverse()). */
-    public weaponHead: Point | undefined = undefined;
 
     public constructor(private readonly puppet: Puppet) {
-    }
-
-    public get key(): string {
-        return this.puppet.key;
     }
 
     /** Draws the puppet with its feet at (x, y). */
@@ -127,11 +127,7 @@ export class PuppetActor {
         };
         const img: (p: LoadedPart, dark: boolean) => void = (p: LoadedPart, dark: boolean): void => {
             ctx.drawImage(dark ? p.dark : p.img, p.x, p.y);
-            if (pose.flash > 0) {
-                ctx.globalAlpha = pose.flash;
-                ctx.drawImage(p.white, p.x, p.y);
-                ctx.globalAlpha = 1;
-            }
+            flashOverlay(ctx, p.white, p.x, p.y, pose.flash);
         };
         const rot: (p: LoadedPart, angle: number, sy: number, fn: () => void) => void = (p: LoadedPart, angle: number, sy: number, fn: () => void): void => {
             ctx.save();
@@ -218,7 +214,7 @@ export class PuppetActor {
         } else {
             const back: boolean = pose.view === PuppetView.Back;
             const weaponArm: string = back ? "arm_r" : "arm_l";
-            const acting: boolean = pose.action === PuppetAction.Attack || pose.action === PuppetAction.Cast;
+            const acting: boolean = pose.action === PuppetAction.Attack;
             const arms: () => void = (): void => {
                 for (const [name, angle, sy] of [["arm_l", P.armL, P.armLSY], ["arm_r", P.armR, P.armRSY]] as [string, number, number][]) {
                     const armPart: LoadedPart | undefined = part(name);
@@ -344,12 +340,7 @@ export class PuppetActor {
         }
         const meta: LoadedItem["meta"] = weapon.meta;
         ctx.save();
-        // Follow the arm exactly (rotation AND fore-shortening) so the fist never slides on the handle.
-        ctx.translate(arm.pivotX, arm.pivotY);
-        ctx.rotate(armAngle);
-        ctx.scale(1, armSY);
-        ctx.translate(hand[0] - arm.pivotX, hand[1] - arm.pivotY);
-        ctx.scale(1, 1 / armSY);
+        toHand(ctx, arm, hand, armAngle, armSY);
         ctx.rotate(this.wAng - armAngle);
         ctx.scale(WEAPON_SCALE, WEAPON_SCALE);
         ctx.translate(-meta.grip[0], -meta.grip[1]);
@@ -363,11 +354,7 @@ export class PuppetActor {
             }
         }
         ctx.drawImage(weapon.img, 0, 0);
-        if (pose.flash > 0) {
-            ctx.globalAlpha = pose.flash;
-            ctx.drawImage(weapon.white, 0, 0);
-            ctx.globalAlpha = 1;
-        }
+        flashOverlay(ctx, weapon.white, 0, 0, pose.flash);
         if (weapon.type === WeaponType.Bow && meta.tipTop && meta.tipBottom) {
             this.drawBowString(ctx, meta.tipTop, meta.tipBottom, meta.stringSide ?? -1, meta.grip[1], meta.h, pose);
         }
@@ -375,8 +362,6 @@ export class PuppetActor {
         const tip: DOMPoint = m.transformPoint(new DOMPoint(meta.grip[0], meta.h * 0.97));
         const mid: DOMPoint = m.transformPoint(new DOMPoint(meta.grip[0], meta.h * 0.42));
         this.blade = {tip: [tip.x, tip.y], mid: [mid.x, mid.y]};
-        const headPoint: DOMPoint = m.transformPoint(new DOMPoint(meta.grip[0], meta.tipDown ? meta.h * 0.97 : 4));
-        this.weaponHead = [headPoint.x, headPoint.y];
         ctx.restore();
     }
 
@@ -400,21 +385,13 @@ export class PuppetActor {
             return;
         }
         ctx.save();
-        ctx.translate(arm.pivotX, arm.pivotY);
-        ctx.rotate(armAngle);
-        ctx.scale(1, armSY);
-        ctx.translate(hand[0] - arm.pivotX, hand[1] - arm.pivotY);
-        ctx.scale(1, 1 / armSY);
+        toHand(ctx, arm, hand, armAngle, armSY);
         // Kept roughly upright: it counters most of the arm swing.
         ctx.rotate(-armAngle * 0.8);
         ctx.scale(squashX * 1.15, 1.15);
         ctx.translate(-item.meta.grip[0], -item.meta.grip[1]);
         ctx.drawImage(dark ? item.dark : item.img, 0, 0);
-        if (flash > 0) {
-            ctx.globalAlpha = flash;
-            ctx.drawImage(item.white, 0, 0);
-            ctx.globalAlpha = 1;
-        }
+        flashOverlay(ctx, item.white, 0, 0, flash);
         ctx.restore();
     }
 
@@ -519,33 +496,6 @@ export class PuppetActor {
             } else {
                 this.poseSlash(P, v, pose.actionTime);
             }
-        } else if (pose.action === PuppetAction.Cast) {
-            const t: number = pose.actionTime;
-            const k: number = ease(Math.min(1, t / 0.3));
-            const rel: number = t > 0.9 ? Math.min(1, (t - 0.9) / 0.15) : 0;
-            if (v === PuppetView.Side) {
-                P.armL = -2.2 * k + 1.6 * rel;
-                P.farArm = -2.0 * k + 1.4 * rel;
-                P.head = -0.08;
-            } else {
-                P.armL = 2.3 * k - 1.5 * rel;
-                P.armR = -2.3 * k + 1.5 * rel;
-            }
-            P.rootY = -10 * k + Math.sin(time * 8) * 1.5;
-        } else if (pose.action === PuppetAction.Dash) {
-            P.torso = v === PuppetView.Side ? 0.3 : 0;
-            P.rootY = -6;
-            if (v === PuppetView.Side) {
-                P.armL = 0.9;
-                P.farArm = 1.0;
-                P.legL = {a: 0.5, lift: 4, sy: 1};
-                P.farLeg = -0.4;
-            } else {
-                P.armL = 0.5;
-                P.armR = -0.5;
-                P.legL = {a: 0.1, lift: 10, sy: 0.9};
-                P.legR = {a: -0.1, lift: 4, sy: 0.95};
-            }
         }
         // Poses are authored for side art facing right; mirror the signs when the art faces left.
         if (v === PuppetView.Side && this.puppet.sideFacing === -1) {
@@ -626,7 +576,7 @@ export class PuppetActor {
     }
 
     private poseStaff(P: PoseFrame, v: PuppetView, t: number): void {
-        // Raise the staff and point its head at the enemy (the scene fires the bolt from weaponHead).
+        // Raise the staff and point its head at the enemy.
         const k2: number = ease(Math.min(1, t / 0.22)) * (1 - (t > 0.42 ? ease(Math.min(1, (t - 0.42) / 0.3)) : 0));
         if (v === PuppetView.Side) {
             P.armL = -1.35 * k2 + P.armL * (1 - k2);

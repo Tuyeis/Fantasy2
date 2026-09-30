@@ -1,5 +1,6 @@
 import {AbilityKey} from "../data/abilities";
 import {Element, ELEMENTS} from "../data/element";
+import {clamp01, ease, rgba} from "./draw-utils";
 
 /**
  * Spell visuals shared by the turn-based and the real-time combat. Every ability has a style; the element colours it.
@@ -91,12 +92,16 @@ export const RANGED_STYLES: FxStyle[] = [FxStyle.Bolt, FxStyle.Fireball, FxStyle
     FxStyle.Pillar, FxStyle.Drain, FxStyle.Swarm, FxStyle.Gaze];
 
 /** How long a style takes before its damage should land (the scene can wait on it). */
+/** Seconds until a plain arrow (bow basic attack) reaches its target. */
+export const ARROW_IMPACT_DELAY: number = 0.28;
+const BASIC_ARROW_COLOR: string = "#f1e3c2";
+
 export function fxImpactDelay(key: AbilityKey): number {
     switch (ABILITY_FX[key]) {
         case FxStyle.Bolt:
         case FxStyle.Fireball:
         case FxStyle.Arrow:
-            return 0.28;
+            return ARROW_IMPACT_DELAY;
         case FxStyle.Missiles:
             return 0.35;
         case FxStyle.ArrowRain:
@@ -133,6 +138,8 @@ interface Mote {
 }
 
 interface Fx {
+    /** Null for plain effects that belong to no ability (a bow's basic shot). */
+    ability: AbilityKey | null;
     style: FxStyle;
     color: string;
     from: Point;
@@ -151,16 +158,8 @@ const DURATION: Record<FxStyle, number> = {
     [FxStyle.Heal]: 1.0, [FxStyle.Buff]: 0.9, [FxStyle.Shield]: 1.0, [FxStyle.Pillar]: 0.9
 };
 
-const ease: (k: number) => number = (k: number): number => 1 - Math.pow(1 - k, 3);
-const clamp01: (k: number) => number = (k: number): number => Math.max(0, Math.min(1, k));
-
 function lerp(a: Point, b: Point, k: number): Point {
     return {x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k};
-}
-
-function rgba(hex: string, alpha: number): string {
-    const n: number = parseInt(hex.slice(1), 16);
-    return "rgba(" + ((n >> 16) & 255) + "," + ((n >> 8) & 255) + "," + (n & 255) + "," + clamp01(alpha) + ")";
 }
 
 function glowDot(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, color: string, alpha: number): void {
@@ -183,11 +182,12 @@ export class SpellFxLayer {
      */
     public cast(key: AbilityKey, element: Element, from: Point, to: Point, scale: number = 1, hits: number = 1): void {
         const style: FxStyle = ABILITY_FX[key];
-        this.fxs.push({style: style, color: fxColor(key, element), from: from, to: to, t: 0, duration: DURATION[style], scale: scale, hits: hits, seed: Math.random() * 1000});
+        this.fxs.push({ability: key, style: style, color: fxColor(key, element), from: from, to: to, t: 0, duration: DURATION[style], scale: scale, hits: hits, seed: Math.random() * 1000});
     }
 
-    public get busy(): boolean {
-        return this.fxs.length > 0;
+    /** A plain arrow, for the basic attack of bow wielders. */
+    public shootArrow(from: Point, to: Point, scale: number = 1): void {
+        this.fxs.push({ability: null, style: FxStyle.Arrow, color: BASIC_ARROW_COLOR, from: from, to: to, t: 0, duration: DURATION[FxStyle.Arrow], scale: scale, hits: 1, seed: Math.random() * 1000});
     }
 
     public update(dt: number): void {
@@ -551,8 +551,9 @@ export class SpellFxLayer {
                     ctx.fillStyle = rgba(c, 1 - b);
                     ctx.font = "700 " + Math.round(22 * s) + "px 'Segoe UI', sans-serif";
                     ctx.textAlign = "center";
-                    ctx.fillText(c === "#f783ac" ? "♥" : "z", fx.to.x + 18 * s, fx.to.y - 50 * s - b * 30 * s);
-                    ctx.fillText(c === "#f783ac" ? "♥" : "z", fx.to.x - 16 * s, fx.to.y - 40 * s - b * 44 * s);
+                    const glyph: string = fx.ability === AbilityKey.CharmGaze ? "♥" : "z";
+                    ctx.fillText(glyph, fx.to.x + 18 * s, fx.to.y - 50 * s - b * 30 * s);
+                    ctx.fillText(glyph, fx.to.x - 16 * s, fx.to.y - 40 * s - b * 44 * s);
                 }
                 break;
             }

@@ -1,4 +1,4 @@
-import {ellipsePath} from "./draw-utils";
+import {ellipsePath, fillStroke} from "./draw-utils";
 
 /** Visual state of one training dummy. */
 export interface DummyLook {
@@ -57,7 +57,7 @@ export function drawTrainingDummy(ctx: CanvasRenderingContext2D, x: number, y: n
 
     // Burlap body with a painted target.
     ellipsePath(ctx, 0, -30, 11, 15);
-    paint(ctx, "#c9a56a", 1.2, "#5a4122");
+    fillStroke(ctx, "#c9a56a", 1.2, "#5a4122");
     ctx.strokeStyle = "rgba(90,65,34,0.45)";
     ctx.lineWidth = 0.8;
     for (let i: number = -2; i <= 2; i++) {
@@ -67,11 +67,11 @@ export function drawTrainingDummy(ctx: CanvasRenderingContext2D, x: number, y: n
         ctx.stroke();
     }
     ellipsePath(ctx, 0, -29, 6.5, 6.5);
-    paint(ctx, "#e8e2d0", 1, "#8a1f1f");
+    fillStroke(ctx, "#e8e2d0", 1, "#8a1f1f");
     ellipsePath(ctx, 0, -29, 4, 4);
-    paint(ctx, "#c92a2a", 0.8, "#8a1f1f");
+    fillStroke(ctx, "#c92a2a", 0.8, "#8a1f1f");
     ellipsePath(ctx, 0, -29, 1.6, 1.6);
-    paint(ctx, "#f8f9fa", 0.5, "#8a1f1f");
+    fillStroke(ctx, "#f8f9fa", 0.5, "#8a1f1f");
     // Rope belt.
     ctx.strokeStyle = "#8d6e3f";
     ctx.lineWidth = 2;
@@ -82,7 +82,7 @@ export function drawTrainingDummy(ctx: CanvasRenderingContext2D, x: number, y: n
 
     // Sack head with stitched face.
     ellipsePath(ctx, 0, -53, 8, 8.5);
-    paint(ctx, "#d4b47a", 1.2, "#5a4122");
+    fillStroke(ctx, "#d4b47a", 1.2, "#5a4122");
     ctx.strokeStyle = "#3b2716";
     ctx.lineWidth = 1.1;
     for (const ex of [-3, 3]) {
@@ -115,12 +115,4 @@ export function drawTrainingDummy(ctx: CanvasRenderingContext2D, x: number, y: n
         ctx.fill();
     }
     ctx.restore();
-}
-
-function paint(ctx: CanvasRenderingContext2D, fill: string, lineWidth: number, stroke: string): void {
-    ctx.fillStyle = fill;
-    ctx.fill();
-    ctx.lineWidth = lineWidth;
-    ctx.strokeStyle = stroke;
-    ctx.stroke();
 }

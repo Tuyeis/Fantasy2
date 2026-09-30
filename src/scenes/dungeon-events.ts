@@ -56,7 +56,6 @@ export function resolveEvent(game: Game, room: RoomData, event: DungeonEventKey)
             const hpRatio: number = run.hp / before.hp;
             const manaRatio: number = run.mana / Math.max(1, before.mana);
             save.hero.classKey = chosen;
-            run.classKey = chosen;
             unlockClass(save, chosen);
             const after: StatBlock = computeHeroStats(save);
             run.hp = Math.max(1, Math.round(after.hp * hpRatio));

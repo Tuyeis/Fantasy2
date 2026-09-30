@@ -4,7 +4,7 @@ import {Input, Vec2} from "../core/input";
 import {t} from "../core/i18n";
 import {chance, pick, randFloat} from "../core/rng";
 import {SaveData} from "../core/save-store";
-import {button, el, ToastKind, WindowHandle} from "../core/ui";
+import {el, ToastKind} from "../core/ui";
 import {DamageType} from "../data/abilities";
 import {Element} from "../data/element";
 import {floorDef} from "../data/floors";
@@ -13,21 +13,26 @@ import {StatBlock} from "../data/stat-block";
 import {createEnemyCombatant, createHeroCombatant} from "../logic/combat-engine";
 import {Combatant, DamageRoll, rollDamage} from "../logic/combat-math";
 import {computeHeroStats, dashCharges} from "../logic/hero-stats";
-import {drawClassHero} from "../render/class-hero";
+import {drawClassHero, heroWeaponType} from "../render/class-hero";
+import {WeaponType} from "../render/puppet/puppet-types";
 import {drawText, ellipsePath, glow, hash, rgba} from "../render/draw-utils";
+import {FloaterLayer} from "../render/floater-layer";
 import {defaultPose} from "../render/hero-sprite";
 import {defaultMonsterPose, drawMonster} from "../render/monster-sprite";
-import {openOptions} from "../windows/options-window";
+import {openBattlePause} from "./battle-pause";
+import {RealTimeBolt, RealTimeHero} from "./real-time-hero";
 import {TownScene, TownSpawn} from "./town-scene";
+import {bar} from "./world-helpers";
 
 const ARENA_RADIUS: number = 380;
 const HERO_SPEED: number = 190;
-const DASH_SPEED: number = 620;
-const DASH_TIME: number = 0.17;
-const IFRAME_TIME: number = 0.32;
-const DASH_RECHARGE: number = 2.2;
+const DASH: RealTimeHero.DashConfig = {speed: 620, time: 0.17, iframeTime: 0.32, recharge: 2.2};
 const MELEE_RANGE: number = 78;
 const MELEE_COOLDOWN: number = 0.38;
+/** Bow basic attack: an arrow that flies where you aim; slower and softer than a swing. */
+const ARROW_COOLDOWN: number = 0.55;
+const ARROW_POWER: number = 0.7;
+const ARROW_SPEED: number = 520;
 const BOLT_COOLDOWN: number = 0.35;
 const BOLT_MANA: number = 5;
 const WAVES: number = 5;
@@ -48,23 +53,11 @@ interface ArenaEnemy {
     knockY: number;
 }
 
-interface Bolt {
-    x: number;
-    y: number;
-    vx: number;
-    vy: number;
-    life: number;
+interface Bolt extends RealTimeBolt {
+    /** Cast by the hero (hits monsters) rather than by a monster (hits the hero). */
     friendly: boolean;
-    color: string;
-    damage: number;
-}
-
-interface Floater {
-    text: string;
-    x: number;
-    y: number;
-    life: number;
-    color: string;
+    /** A bow's basic shot: physical, drawn as an arrow. */
+    arrow: boolean;
 }
 
 enum ArenaState {
@@ -74,28 +67,29 @@ enum ArenaState {
     Lost = "lost"
 }
 
-export class ArenaScene implements Scene {
+export class ArenaScene implements Scene, RealTimeHero {
     public readonly music: MusicTrack = MusicTrack.Arena;
     private readonly hero: Combatant;
-    private x: number = 0;
-    private y: number = 120;
+    public x: number = 0;
+    public y: number = 120;
     private facing: number = 1;
     private aim: Vec2 = {x: 1, y: 0};
     private walk: number = 0;
     private moving: boolean = false;
-    private dashTimer: number = 0;
-    private dashDir: Vec2 = {x: 1, y: 0};
-    private iframes: number = 0;
-    private charges: number;
-    private readonly maxCharges: number;
-    private rechargeTimer: number = 0;
+    public dashTimer: number = 0;
+    public dashDir: Vec2 = {x: 1, y: 0};
+    public iframes: number = 0;
+    public charges: number;
+    public readonly maxCharges: number;
+    public rechargeTimer: number = 0;
     private meleeTimer: number = 0;
     private boltTimer: number = 0;
     private swing: number = 0;
     private flash: number = 0;
     private enemies: ArenaEnemy[] = [];
     private bolts: Bolt[] = [];
-    private floaters: Floater[] = [];
+    private readonly bowWielder: boolean;
+    private readonly floaters: FloaterLayer = new FloaterLayer({riseSpeed: 40, size: 18});
     private wave: number = 0;
     private waveTimer: number = 2;
     private state: ArenaState = ArenaState.Countdown;
@@ -106,6 +100,7 @@ export class ArenaScene implements Scene {
     private scale: number = 1;
 
     constructor(private readonly game: Game) {
+        this.bowWielder = heroWeaponType((game.save as SaveData).hero.classKey) === WeaponType.Bow;
         const save: SaveData = game.save as SaveData;
         const stats: StatBlock = computeHeroStats(save);
         this.hero = createHeroCombatant("hero", stats, stats.hp, stats.mana);
@@ -130,15 +125,7 @@ export class ArenaScene implements Scene {
     }
 
     public onEscape(): void {
-        const win: WindowHandle = this.game.ui.openWindow({title: t("paused"), cls: "window-small"});
-        win.body.append(el("div", {style: {display: "flex", flexDirection: "column", gap: "8px"}}, [
-            button(t("resume"), () => win.close(), {cls: "btn-primary"}),
-            button(t("options"), () => openOptions(this.game)),
-            button(t("returnToTown"), () => {
-                win.close();
-                this.leave();
-            })
-        ]));
+        openBattlePause(this.game, {label: t("returnToTown"), onClick: () => this.leave()});
     }
 
     private leave(): void {
@@ -157,17 +144,11 @@ export class ArenaScene implements Scene {
         if (!this.hudEl) {
             return;
         }
-        const hpPct: number = Math.max(0, (this.hero.hp / this.hero.stats.hp) * 100);
-        const manaPct: number = Math.max(0, (this.hero.mana / Math.max(1, this.hero.stats.mana)) * 100);
-        let pips: string = "";
-        for (let i: number = 0; i < this.maxCharges; i++) {
-            pips += i < this.charges ? "◆" : "◇";
-        }
         this.hudEl.replaceChildren(el("div", {cls: "hud-panel"}, [
             el("div", {cls: "hud-name", text: t("coliseum") + " · " + t("wave", {n: Math.max(1, this.wave), max: WAVES})}),
-            el("div", {cls: "bar hp"}, [el("div", {cls: "fill", style: {width: hpPct + "%"}}), el("div", {cls: "bar-text", text: t("hp") + " " + Math.ceil(this.hero.hp) + "/" + this.hero.stats.hp})]),
-            el("div", {cls: "bar mana"}, [el("div", {cls: "fill", style: {width: manaPct + "%"}}), el("div", {cls: "bar-text", text: t("mana") + " " + Math.floor(this.hero.mana) + "/" + this.hero.stats.mana})]),
-            el("div", {cls: "hud-line", style: {marginTop: "5px"}}, [el("span", {}, [t("dashCharges") + ": ", el("b", {text: pips})])])
+            bar("hp", this.hero.hp, this.hero.stats.hp, t("hp") + " " + Math.ceil(this.hero.hp) + "/" + this.hero.stats.hp),
+            bar("mana", this.hero.mana, this.hero.stats.mana, t("mana") + " " + Math.floor(this.hero.mana) + "/" + this.hero.stats.mana),
+            el("div", {cls: "hud-line", style: {marginTop: "5px"}}, [el("span", {}, [t("dashCharges") + ": ", el("b", {text: RealTimeHero.pips(this)})])])
         ]));
     }
 
@@ -182,7 +163,7 @@ export class ArenaScene implements Scene {
         for (let i: number = 0; i < count; i++) {
             const angle: number = (i / count) * Math.PI * 2 + randFloat(0, 0.5);
             const def: MonsterDef = MONSTERS[pick(pool)];
-            const armored: boolean = this.wave === WAVES && i === 0 ? true : chance(0.1 * this.wave);
+            const armored: boolean = (this.wave === WAVES && i === 0) || chance(0.1 * this.wave);
             this.addEnemy(def, armored, Math.cos(angle) * (ARENA_RADIUS - 40), Math.sin(angle) * (ARENA_RADIUS - 40) * 0.62);
         }
         this.game.ui.toast(t("wave", {n: this.wave, max: WAVES}), ToastKind.Special);
@@ -204,11 +185,7 @@ export class ArenaScene implements Scene {
 
     public update(dt: number): void {
         this.time += dt;
-        this.floaters = this.floaters.filter((f: Floater) => {
-            f.life -= dt;
-            f.y -= dt * 40;
-            return f.life > 0;
-        });
+        this.floaters.update(dt);
         this.hudTimer -= dt;
         if (this.hudTimer <= 0) {
             this.hudTimer = 0.1;
@@ -253,32 +230,21 @@ export class ArenaScene implements Scene {
 
         this.meleeTimer -= dt;
         this.boltTimer -= dt;
-        this.iframes -= dt;
+        RealTimeHero.tick(this, dt, DASH);
         this.swing = Math.max(0, this.swing - dt * 3.5);
         this.flash = Math.max(0, this.flash - dt * 4);
         this.hero.mana = Math.min(this.hero.stats.mana, this.hero.mana + this.hero.stats.mana * 0.04 * dt);
-        if (this.charges < this.maxCharges) {
-            this.rechargeTimer += dt;
-            if (this.rechargeTimer >= DASH_RECHARGE) {
-                this.rechargeTimer = 0;
-                this.charges++;
-            }
-        }
 
         if (this.dashTimer > 0) {
             this.dashTimer -= dt;
-            this.moveHero(this.dashDir.x * DASH_SPEED * dt, this.dashDir.y * DASH_SPEED * dt);
+            this.moveHero(this.dashDir.x * DASH.speed * dt, this.dashDir.y * DASH.speed * dt);
         } else {
             this.moving = axis.x !== 0 || axis.y !== 0;
             if (this.moving) {
                 this.walk += dt * 12;
                 this.moveHero(axis.x * HERO_SPEED * dt, axis.y * HERO_SPEED * dt);
             }
-            if (input.wasPressed("Space", "ShiftLeft") && this.charges > 0) {
-                this.charges--;
-                this.dashTimer = DASH_TIME;
-                this.iframes = IFRAME_TIME;
-                this.dashDir = this.moving ? {x: axis.x, y: axis.y} : {x: this.aim.x, y: this.aim.y};
+            if (input.wasPressed("Space", "ShiftLeft") && RealTimeHero.startDash(this, this.moving ? axis : this.aim, DASH)) {
                 this.game.audio.play(Sfx.Dash);
             }
         }
@@ -291,20 +257,17 @@ export class ArenaScene implements Scene {
     }
 
     private moveHero(dx: number, dy: number): void {
-        let nx: number = this.x + dx;
-        let ny: number = this.y + dy;
-        const ex: number = nx / ARENA_RADIUS;
-        const ey: number = ny / (ARENA_RADIUS * 0.62);
-        const d: number = Math.hypot(ex, ey);
-        if (d > 0.94) {
-            nx = (nx / d) * 0.94;
-            ny = (ny / d) * 0.94;
-        }
-        this.x = nx;
-        this.y = ny;
+        RealTimeHero.move(this, dx, dy, ARENA_RADIUS, ARENA_RADIUS * 0.62);
     }
 
     private melee(): void {
+        if (this.bowWielder) {
+            this.meleeTimer = ARROW_COOLDOWN;
+            this.swing = 1;
+            this.game.audio.play(Sfx.Swing);
+            this.bolts.push({x: this.x, y: this.y - 40, vx: this.aim.x * ARROW_SPEED, vy: this.aim.y * ARROW_SPEED, life: 0.9, friendly: true, arrow: true, color: "#f1e3c2", damage: 0});
+            return;
+        }
         this.meleeTimer = MELEE_COOLDOWN;
         this.swing = 1;
         this.game.audio.play(Sfx.Swing);
@@ -332,7 +295,7 @@ export class ArenaScene implements Scene {
         this.hero.mana -= BOLT_MANA;
         this.boltTimer = BOLT_COOLDOWN;
         this.game.audio.play(Sfx.Magic);
-        this.bolts.push({x: this.x, y: this.y - 40, vx: this.aim.x * 440, vy: this.aim.y * 440, life: 1.2, friendly: true, color: "#9775fa", damage: 0});
+        this.bolts.push({x: this.x, y: this.y - 40, vx: this.aim.x * 440, vy: this.aim.y * 440, life: 1.2, friendly: true, arrow: false, color: "#9775fa", damage: 0});
     }
 
     private hitEnemy(enemy: ArenaEnemy, roll: DamageRoll, nx: number, ny: number): void {
@@ -392,7 +355,7 @@ export class ArenaScene implements Scene {
                 if (enemy.shootTimer <= 0) {
                     enemy.shootTimer = randFloat(2, 3.2);
                     const roll: DamageRoll = rollDamage(enemy.combatant, this.hero, DamageType.Magical, Element.Neutral, 0.8);
-                    this.bolts.push({x: enemy.x, y: enemy.y - 40, vx: (dx / dist) * 200, vy: (dy / dist) * 200, life: 3, friendly: false, color: enemy.def.colors.accent, damage: roll.amount});
+                    this.bolts.push({x: enemy.x, y: enemy.y - 40, vx: (dx / dist) * 200, vy: (dy / dist) * 200, life: 3, friendly: false, arrow: false, color: enemy.def.colors.accent, damage: roll.amount});
                 }
             }
         }
@@ -417,14 +380,14 @@ export class ArenaScene implements Scene {
 
     private updateBolts(dt: number): void {
         for (const bolt of [...this.bolts]) {
-            bolt.x += bolt.vx * dt;
-            bolt.y += bolt.vy * dt;
-            bolt.life -= dt;
+            RealTimeBolt.advance(bolt, dt);
             let consumed: boolean = bolt.life <= 0;
             if (bolt.friendly) {
                 for (const enemy of this.enemies) {
                     if (!consumed && Math.hypot(enemy.x - bolt.x, enemy.y - 40 - bolt.y) < 34 * enemy.def.size) {
-                        const roll: DamageRoll = rollDamage(this.hero, enemy.combatant, DamageType.Magical, Element.Neutral, 1.3);
+                        const roll: DamageRoll = bolt.arrow
+                            ? rollDamage(this.hero, enemy.combatant, DamageType.Physical, Element.Neutral, ARROW_POWER)
+                            : rollDamage(this.hero, enemy.combatant, DamageType.Magical, Element.Neutral, 1.3);
                         const len: number = Math.hypot(bolt.vx, bolt.vy) || 1;
                         this.hitEnemy(enemy, roll, bolt.vx / len, bolt.vy / len);
                         consumed = true;
@@ -503,7 +466,7 @@ export class ArenaScene implements Scene {
         const drawables: {y: number; draw: () => void}[] = [];
         for (const enemy of this.enemies) {
             drawables.push({y: enemy.y, draw: () => {
-                drawMonster(ctx, enemy.x, enemy.y, enemy.def, defaultMonsterPose({scale: SPRITE_SCALE, time: this.time, flash: enemy.flash, armored: enemy.armored, facing: this.x < enemy.x ? -1 : 1}));
+                drawMonster(ctx, enemy.x, enemy.y, enemy.def, defaultMonsterPose({scale: SPRITE_SCALE, time: this.time, flash: enemy.flash, armored: enemy.armored, facing: this.x < enemy.x ? -1 : 1}), "monster_" + this.enemies.indexOf(enemy));
                 const pct: number = Math.max(0, enemy.combatant.hp / enemy.combatant.stats.hp);
                 ctx.fillStyle = "rgba(0,0,0,0.6)";
                 ctx.fillRect(enemy.x - 22, enemy.y + 8, 44, 5);
@@ -536,20 +499,38 @@ export class ArenaScene implements Scene {
             d.draw();
         }
         for (const bolt of this.bolts) {
-            glow(ctx, bolt.x, bolt.y, 22, bolt.color, 0.8);
-            ctx.fillStyle = "#fff";
-            ctx.beginPath();
-            ctx.arc(bolt.x, bolt.y, 5, 0, Math.PI * 2);
-            ctx.fill();
+            if (bolt.arrow) {
+                drawArrow(ctx, bolt);
+            } else {
+                RealTimeBolt.draw(ctx, bolt);
+            }
         }
-        for (const f of this.floaters) {
-            ctx.globalAlpha = Math.min(1, f.life * 2);
-            drawText(ctx, f.text, f.x, f.y, 18, f.color);
-        }
-        ctx.globalAlpha = 1;
+        this.floaters.draw(ctx);
         ctx.restore();
         if (this.state === ArenaState.Countdown) {
-            drawText(ctx, this.wave === 0 ? t("wave", {n: 1, max: WAVES}) : t("wave", {n: this.wave + 1, max: WAVES}), w / 2, h * 0.2, 40, "#f5c542");
+            drawText(ctx, t("wave", {n: this.wave + 1, max: WAVES}), w / 2, h * 0.2, 40, "#f5c542");
         }
     }
+}
+
+/** Shaft and head along the flight direction. */
+function drawArrow(ctx: CanvasRenderingContext2D, bolt: RealTimeBolt): void {
+    const len: number = Math.hypot(bolt.vx, bolt.vy) || 1;
+    const dx: number = bolt.vx / len;
+    const dy: number = bolt.vy / len;
+    ctx.save();
+    ctx.strokeStyle = "#8d6e3f";
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(bolt.x - dx * 20, bolt.y - dy * 20);
+    ctx.lineTo(bolt.x, bolt.y);
+    ctx.stroke();
+    ctx.fillStyle = "#dee2e6";
+    ctx.beginPath();
+    ctx.moveTo(bolt.x + dx * 7, bolt.y + dy * 7);
+    ctx.lineTo(bolt.x - dy * 4, bolt.y + dx * 4);
+    ctx.lineTo(bolt.x + dy * 4, bolt.y - dx * 4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
 }

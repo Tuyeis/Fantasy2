@@ -5,6 +5,9 @@ import {EquipSlot, ItemKey} from "../data/items";
 import {MissionKey} from "../data/missions";
 import {MonsterKey} from "../data/monsters";
 import {PerkKey} from "../data/perks";
+import {TalentKey} from "../data/talents";
+import {AbilityKey} from "../data/abilities";
+import {ACTION_BAR_SIZE, ActionBarSlot} from "../data/action-bar";
 import {Lang} from "./i18n";
 
 export const SAVE_VERSION: number = 1;
@@ -15,11 +18,24 @@ export interface HeroData {
     classKey: ClassKey;
     unlockedClasses: ClassKey[];
     level: number;
-    /** Unspent experience. Only the Guild converts it into levels. */
+    /** Experience towards the next level (levels are gained instantly). */
     xp: number;
     gold: number;
     diamonds: number;
     equipment: EquipmentData;
+    /** Ranks per talent key (see data/talents.ts). */
+    talents: Record<TalentKey, number>;
+    /** Action bar slots 1-8 (abilities or consumables). */
+    actionBar: (ActionBarSlot | null)[];
+    /** Abilities already placed on the bar once when learned (see logic/action-bar). */
+    barOffered: AbilityKey[];
+}
+
+export function defaultActionBar(): (ActionBarSlot | null)[] {
+    const bar: (ActionBarSlot | null)[] = new Array<ActionBarSlot | null>(ACTION_BAR_SIZE).fill(null);
+    bar[ACTION_BAR_SIZE - 2] = {kind: ActionBarSlot.Kind.Item, item: ItemKey.PotionSmall};
+    bar[ACTION_BAR_SIZE - 1] = {kind: ActionBarSlot.Kind.Item, item: ItemKey.EtherSmall};
+    return bar;
 }
 
 export interface RecordsData {
@@ -82,7 +98,10 @@ export function createNewSave(): SaveData {
             xp: 0,
             gold: 120,
             diamonds: 0,
-            equipment: equipment
+            equipment: equipment,
+            talents: {},
+            actionBar: defaultActionBar(),
+            barOffered: []
         },
         inventory: {
             stacks: {[ItemKey.PotionSmall]: 3, [ItemKey.EtherSmall]: 1},
@@ -132,7 +151,7 @@ export function loadSave(): SaveData | null {
         }
         // Fill fields that may be missing in older saves of the same version.
         const fresh: SaveData = createNewSave();
-        const merged: SaveData = {...fresh, ...parsed, records: {...fresh.records, ...parsed.records}};
+        const merged: SaveData = {...fresh, ...parsed, hero: {...fresh.hero, ...parsed.hero}, records: {...fresh.records, ...parsed.records}};
         // Buildings added after the save was made that start unlocked (e.g. the bank).
         for (const key of ALL_BUILDINGS) {
             if (BUILDINGS[key].startsUnlocked && !merged.unlockedBuildings.includes(key)) {
@@ -146,13 +165,11 @@ export function loadSave(): SaveData | null {
     }
 }
 
-export function writeSave(data: SaveData): boolean {
+export function writeSave(data: SaveData): void {
     try {
         localStorage.setItem(SAVE_KEY, JSON.stringify(data));
-        return true;
     } catch (error: unknown) {
         console.warn("Could not write save", error);
-        return false;
     }
 }
 

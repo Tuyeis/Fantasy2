@@ -1,22 +1,22 @@
+import {loadImage} from "../draw-utils";
 import {ALL_VIEWS, LoadedItem, LoadedPart, LoadedView, Point, Puppet, PuppetRig, PuppetView, WeaponMeta, WeaponType} from "./puppet-types";
 
 /** Puppets live in public/art/puppets/<key>/ (class keys and monster keys share the folder). */
 const PUPPET_BASE: string = "art/puppets/";
 
 const loaded: Map<string, Puppet> = new Map<string, Puppet>();
-const pending: Map<string, Promise<Puppet | undefined>> = new Map<string, Promise<Puppet | undefined>>();
 
-function loadImage(src: string): Promise<HTMLImageElement> {
-    return new Promise<HTMLImageElement>((resolve: (img: HTMLImageElement) => void, reject: (err: Error) => void) => {
-        const img: HTMLImageElement = new Image();
-        img.onload = () => resolve(img);
-        img.onerror = () => reject(new Error("image failed: " + src));
-        img.src = src;
-    });
+/** Like loadImage, but a missing image is an error (a puppet with a missing part is broken). */
+async function requireImage(src: string): Promise<HTMLImageElement> {
+    const img: HTMLImageElement | undefined = await loadImage(src);
+    if (!img) {
+        throw new Error("image failed: " + src);
+    }
+    return img;
 }
 
 /** The same image painted in one flat colour (hit flash) or through a CSS filter (far limbs, back of a shield). */
-function recolor(img: HTMLImageElement, filter: string | undefined): HTMLCanvasElement {
+export function recolor(img: HTMLImageElement, filter: string | undefined): HTMLCanvasElement {
     const canvas: HTMLCanvasElement = document.createElement("canvas");
     canvas.width = img.width;
     canvas.height = img.height;
@@ -34,7 +34,7 @@ function recolor(img: HTMLImageElement, filter: string | undefined): HTMLCanvasE
 }
 
 /** JSON that may legitimately be missing. A dev server answers unknown paths with index.html, so check the type. */
-async function fetchOptionalJson<T>(url: string): Promise<T | undefined> {
+export async function fetchOptionalJson<T>(url: string): Promise<T | undefined> {
     try {
         const res: Response = await fetch(url);
         const type: string = res.headers.get("content-type") ?? "";
@@ -47,16 +47,16 @@ async function fetchOptionalJson<T>(url: string): Promise<T | undefined> {
     }
 }
 
-function toWeaponType(raw: string | undefined): WeaponType {
+/** A raw value from a JSON file as a member of `values`; missing gives `fallback`, unknown logs `problem` and gives `fallback`. */
+export function toEnum<T extends string>(values: Record<string, T>, raw: string | undefined, fallback: T, problem: string): T {
     if (raw === undefined) {
-        return WeaponType.Sword;
+        return fallback;
     }
-    const known: WeaponType | undefined = (Object.values(WeaponType) as string[]).includes(raw) ? raw as WeaponType : undefined;
-    if (known === undefined) {
-        console.error("Unknown puppet weapon type, drawing it as a sword:", raw);
-        return WeaponType.Sword;
+    if ((Object.values(values) as string[]).includes(raw)) {
+        return raw as T;
     }
-    return known;
+    console.error(problem, raw);
+    return fallback;
 }
 
 /** Arms painted open (A-pose sheets) hang straighter in play; only the excess over a natural angle is corrected. */
@@ -77,7 +77,7 @@ async function loadView(base: string, view: PuppetView): Promise<LoadedView> {
     const rig: PuppetRig = await res.json() as PuppetRig;
     const parts: Map<string, LoadedPart> = new Map<string, LoadedPart>();
     for (const part of rig.parts) {
-        const img: HTMLImageElement = await loadImage(base + view + "/" + part.file);
+        const img: HTMLImageElement = await requireImage(base + view + "/" + part.file);
         parts.set(part.name, {...part, img: img, white: recolor(img, undefined), dark: recolor(img, "brightness(0.86) saturate(0.92)")});
     }
     return {rig: rig, parts: parts, rest: restCorrection(rig, view)};
@@ -88,19 +88,19 @@ async function loadItem(base: string, name: string): Promise<LoadedItem | undefi
     if (!meta) {
         return undefined;
     }
-    const type: WeaponType = toWeaponType(meta.type);
+    const type: WeaponType = toEnum(WeaponType, meta.type, WeaponType.Sword, "Unknown puppet weapon type, drawing it as a sword:");
     if (type === WeaponType.None) {
         return undefined;
     }
-    const img: HTMLImageElement = await loadImage(base + name + ".png");
+    const img: HTMLImageElement = await requireImage(base + name + ".png");
     return {meta: meta, type: type, img: img, white: recolor(img, undefined), dark: recolor(img, "brightness(0.55) saturate(0.7)")};
 }
 
-async function loadPuppetNow(key: string): Promise<Puppet | undefined> {
+async function loadPuppet(key: string): Promise<void> {
     const base: string = PUPPET_BASE + key + "/";
-    // A puppet exists when its side view does; missing puppets are normal (procedural fallback).
+    // A puppet exists when its side view does (monsters without one are painted sprites).
     if (!await fetchOptionalJson<PuppetRig>(base + PuppetView.Side + "/rig.json")) {
-        return undefined;
+        return;
     }
     try {
         const views: Partial<Record<PuppetView, LoadedView>> = {};
@@ -116,20 +116,9 @@ async function loadPuppetNow(key: string): Promise<Puppet | undefined> {
             sideFacing: complete[PuppetView.Side].rig.facing ?? 1
         };
         loaded.set(key, puppet);
-        return puppet;
     } catch (err: unknown) {
-        console.error("Puppet failed to load, using procedural sprite:", key, err);
-        return undefined;
+        console.error("Puppet failed to load:", key, err);
     }
-}
-
-export function loadPuppet(key: string): Promise<Puppet | undefined> {
-    let job: Promise<Puppet | undefined> | undefined = pending.get(key);
-    if (!job) {
-        job = loadPuppetNow(key);
-        pending.set(key, job);
-    }
-    return job;
 }
 
 /** Loads several puppets in parallel; never rejects. */

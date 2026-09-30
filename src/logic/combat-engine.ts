@@ -1,8 +1,8 @@
 import {t, tr} from "../core/i18n";
 import {chance, weightedPick} from "../core/rng";
-import {AbilityDef, AbilityKey, AbilityKind, ABILITIES, BuffSpec, DamageType} from "../data/abilities";
+import {AbilityDef, AbilityKey, AbilityKind, BuffSpec, DamageType} from "../data/abilities";
 import {CompanionAction, CompanionDef, CompanionKey, COMPANIONS} from "../data/companions";
-import {Element} from "../data/element";
+import {Element, elementMultiplier} from "../data/element";
 import {ItemDef, ItemKey, ITEMS} from "../data/items";
 import {ARMORED_DEF_MULT, ARMORED_HP_MULT, ARMORED_MDEF_MULT, MonsterAttack, MonsterDef} from "../data/monsters";
 import {StatBlock, StatKey, statLabel} from "../data/stat-block";
@@ -81,6 +81,10 @@ export interface CombatContext {
     canFlee: boolean;
     /** Removes one item from the inventory; returns false if none is left. */
     consumeItem: (key: ItemKey) => boolean;
+    /** The ability as the hero casts it (talents applied). */
+    abilityDef: (key: AbilityKey) => AbilityDef;
+    /** Power of the basic attack (talents can raise it). */
+    basicAttackPower: number;
 }
 
 export interface TurnStart {
@@ -186,10 +190,10 @@ export class CombatEngine {
             case HeroActionKind.Attack:
                 events.push(this.log(t("logAttack", {actor: this.hero.name, skill: t("attack")})));
                 events.push({kind: CombatEventKind.Lunge, actor: Side.Hero, target: Side.Enemy});
-                this.dealDamage(this.hero, this.enemy, DamageType.Physical, Element.Neutral, 1, 0, 0, events);
+                this.dealDamage(this.hero, this.enemy, DamageType.Physical, Element.Neutral, this.context.basicAttackPower, 0, 0, events);
                 break;
             case HeroActionKind.Ability:
-                this.useAbility(ABILITIES[action.ability as AbilityKey], events);
+                this.useAbility(this.context.abilityDef(action.ability as AbilityKey), events);
                 break;
             case HeroActionKind.Item:
                 this.useItem(action.item as ItemKey, events);
@@ -275,12 +279,7 @@ export class CombatEngine {
             switch (def.action) {
                 case CompanionAction.Attack: {
                     const raw: number = def.power * mult * (6 + this.context.heroLevel * 2.5);
-                    let amount: number = mitigate(raw, this.enemy.stats.mdef * 0.5);
-                    if (this.enemy.weak.includes(def.element)) {
-                        amount *= 1.5;
-                    } else if (this.enemy.resist.includes(def.element)) {
-                        amount *= 0.5;
-                    }
+                    const amount: number = mitigate(raw, this.enemy.stats.mdef * 0.5) * elementMultiplier(def.element, this.enemy.weak, this.enemy.resist);
                     events.push(this.log(t("logAttack", {actor: tr(def.name), skill: t("attack")})));
                     this.applyDamage(this.enemy, Math.max(1, Math.round(amount)), false, 1, events);
                     if (this.outcome === CombatOutcome.Ongoing && def.status && def.statusChance) {
@@ -318,6 +317,11 @@ export class CombatEngine {
         if (!this.enraged && this.monster.enrageExtraActions > 0 && this.enemy.hp < this.enemy.stats.hp / 2) {
             this.enraged = true;
             events.push(this.log(t("logEnrage", {target: this.enemy.name}), CombatTone.Bad));
+        }
+        if (this.monster.attacks.length === 0) {
+            // Practice dummies just wobble.
+            events.push(this.log(t("logIdle", {target: this.enemy.name})));
+            return;
         }
         const actions: number = 1 + (this.enraged ? this.monster.enrageExtraActions : 0);
         for (let a: number = 0; a < actions && this.outcome === CombatOutcome.Ongoing; a++) {
@@ -389,8 +393,12 @@ export class CombatEngine {
     private applyDamage(target: Combatant, amount: number, crit: boolean, multiplier: number, events: CombatEvent[], fromStatus?: StatusKey, element?: Element): void {
         target.hp = Math.max(0, target.hp - amount);
         events.push({kind: CombatEventKind.Damage, target: target.side, amount: amount, crit: crit, multiplier: multiplier, hpAfter: target.hp, status: fromStatus, element: element});
-        if (fromStatus === undefined && hasStatus(target, StatusKey.Sleep) && target.hp > 0) {
-            this.removeStatus(target, StatusKey.Sleep, events);
+        if (fromStatus === undefined && target.hp > 0) {
+            // Direct hits break the statuses flagged in the data (Sleep).
+            const broken: StatusInstance[] = target.statuses.filter((s: StatusInstance) => STATUSES[s.key].breaksOnHit);
+            for (const status of broken) {
+                this.removeStatus(target, status.key, events);
+            }
         }
         if (target.hp <= 0) {
             events.push({kind: CombatEventKind.Defeat, target: target.side});

@@ -3,6 +3,7 @@ import {DamageType} from "../data/abilities";
 import {Element} from "../data/element";
 import {stats} from "../data/stat-block";
 import {Combatant, DamageRoll, rollDamage, Side} from "../logic/combat-math";
+import {FloaterLayer} from "../render/floater-layer";
 import {drawTrainingDummy, drawTrainingGround} from "../render/training-dummy";
 
 const DUMMY_RADIUS: number = 11;
@@ -35,15 +36,6 @@ interface PendingHit {
     dirX: number;
 }
 
-interface DamagePopup {
-    x: number;
-    y: number;
-    text: string;
-    color: string;
-    life: number;
-    size: number;
-}
-
 /** Practice yard in town: dummies that take hits, wobble and show the damage you would deal (no armor, no element). */
 export class TrainingYard {
     private readonly dummies: TrainingDummy[];
@@ -54,12 +46,17 @@ export class TrainingYard {
         statuses: [], buffs: [], guarding: false, controlResistant: false
     };
     private pending: PendingHit[] = [];
-    private popups: DamagePopup[] = [];
+    private readonly popups: FloaterLayer = new FloaterLayer({riseSpeed: 38, size: 15, fadeRate: 2.5, style: FloaterLayer.Style.Outlined});
 
     constructor(spots: Vec2[]) {
         this.dummies = spots.map((p: Vec2) => ({x: p.x, y: p.y, lean: 0, leanSpeed: 0, flash: 0}));
         const sum: Vec2 = spots.reduce((a: Vec2, p: Vec2) => ({x: a.x + p.x, y: a.y + p.y}), {x: 0, y: 0});
         this.center = {x: sum.x / Math.max(1, spots.length), y: sum.y / Math.max(1, spots.length)};
+    }
+
+    /** Where the dummies stand (feet), e.g. to walk up to one. */
+    public get positions(): Vec2[] {
+        return this.dummies.map((d: TrainingDummy) => ({x: d.x, y: d.y}));
     }
 
     public blocks(x: number, y: number, r: number): boolean {
@@ -116,11 +113,7 @@ export class TrainingYard {
             d.lean += d.leanSpeed * dt;
             d.flash = Math.max(0, d.flash - dt * 5);
         }
-        this.popups = this.popups.filter((p: DamagePopup) => {
-            p.life -= dt;
-            p.y -= dt * 38;
-            return p.life > 0;
-        });
+        this.popups.update(dt);
     }
 
     private applyHit(h: PendingHit): void {
@@ -148,18 +141,6 @@ export class TrainingYard {
     }
 
     public drawPopups(ctx: CanvasRenderingContext2D): void {
-        ctx.save();
-        ctx.textAlign = "center";
-        ctx.lineJoin = "round";
-        for (const p of this.popups) {
-            ctx.globalAlpha = Math.min(1, p.life * 2.5);
-            ctx.font = "bold " + p.size + "px 'Cinzel', Georgia, serif";
-            ctx.lineWidth = 3.5;
-            ctx.strokeStyle = "rgba(20,12,6,0.9)";
-            ctx.strokeText(p.text, p.x, p.y);
-            ctx.fillStyle = p.color;
-            ctx.fillText(p.text, p.x, p.y);
-        }
-        ctx.restore();
+        this.popups.draw(ctx);
     }
 }

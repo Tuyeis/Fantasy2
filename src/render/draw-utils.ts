@@ -1,5 +1,24 @@
 export const OUTLINE: string = "#15101c";
 
+/** Cubic ease-out on 0..1. */
+export function ease(k: number): number {
+    return 1 - Math.pow(1 - k, 3);
+}
+
+export function clamp01(k: number): number {
+    return Math.max(0, Math.min(1, k));
+}
+
+/** Loads an image; resolves undefined (never rejects) when the file is missing or broken. */
+export function loadImage(src: string): Promise<HTMLImageElement | undefined> {
+    return new Promise<HTMLImageElement | undefined>((resolve: (img: HTMLImageElement | undefined) => void) => {
+        const img: HTMLImageElement = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => resolve(undefined);
+        img.src = src;
+    });
+}
+
 export function hexToRgb(hex: string): [number, number, number] {
     const clean: string = hex.replace("#", "");
     const full: string = clean.length === 3 ? clean.split("").map((c: string) => c + c).join("") : clean;
@@ -19,14 +38,14 @@ export function shade(hex: string, amount: number): string {
 
 export function rgba(hex: string, alpha: number): string {
     const [r, g, b]: [number, number, number] = hexToRgb(hex);
-    return "rgba(" + r + "," + g + "," + b + "," + alpha + ")";
+    return "rgba(" + r + "," + g + "," + b + "," + clamp01(alpha) + ")";
 }
 
-export function fillStroke(ctx: CanvasRenderingContext2D, fill: string | CanvasGradient, lineWidth: number = 1.6): void {
+export function fillStroke(ctx: CanvasRenderingContext2D, fill: string | CanvasGradient, lineWidth: number = 1.6, stroke: string = OUTLINE): void {
     ctx.fillStyle = fill;
     ctx.fill();
     ctx.lineWidth = lineWidth;
-    ctx.strokeStyle = OUTLINE;
+    ctx.strokeStyle = stroke;
     ctx.stroke();
 }
 
@@ -37,11 +56,7 @@ export function ellipsePath(ctx: CanvasRenderingContext2D, x: number, y: number,
 
 export function rectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number = 0): void {
     ctx.beginPath();
-    if (r > 0) {
-        ctx.roundRect(x, y, w, h, r);
-    } else {
-        ctx.rect(x, y, w, h);
-    }
+    ctx.roundRect(x, y, w, h, r);
 }
 
 export function polyPath(ctx: CanvasRenderingContext2D, points: number[]): void {

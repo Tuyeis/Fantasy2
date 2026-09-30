@@ -28,7 +28,7 @@ const CLS = PARAMS.get("cls") || "novice";
 document.title = "Marioneta · " + CLS; document.getElementById("clsName").textContent = "Marioneta · " + CLS;
 const clsPick = document.getElementById("clsPick"); clsPick.value = CLS; clsPick.addEventListener("change", () => { location.search = "?cls=" + clsPick.value; });
 clsPick.addEventListener("keydown", e => e.stopPropagation());
-const BASE = CLS === "novice" ? "novice_puppet/" : "puppets/" + CLS + "/";
+const BASE = "../art/puppets/" + CLS + "/";
 const canvas = document.getElementById("c"), ctx = canvas.getContext("2d"), modeEl = document.getElementById("mode");
 let W, H, DPR;
 function resize() { DPR = Math.min(2, devicePixelRatio || 1); W = innerWidth; H = innerHeight; canvas.width = W * DPR; canvas.height = H * DPR; }

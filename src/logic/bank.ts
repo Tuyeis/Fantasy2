@@ -13,8 +13,18 @@ export const BAG_SLOTS: number = 16;
 export const BANK_SLOTS: number = 48;
 export const STACK_SIZE: number = 20;
 
-export function emptyStorage(): InventoryData {
-    return {stacks: {}, gear: []};
+export enum BankDirection {
+    /** Bag -> bank. */
+    Deposit = "deposit",
+    /** Bank -> bag. */
+    Withdraw = "withdraw"
+}
+
+interface Route {
+    from: InventoryData;
+    to: InventoryData;
+    /** Free slots left in the destination. */
+    free: number;
 }
 
 function stackSlots(inv: InventoryData): number {
@@ -42,51 +52,37 @@ export function bagHasRoomFor(save: SaveData, key: ItemKey, quantity: number = 1
     return bagUsed(save) + slotsNeeded(save.inventory, key, quantity) <= BAG_SLOTS;
 }
 
-function moveStack(from: InventoryData, to: InventoryData, key: ItemKey, quantity: number): void {
-    const left: number = (from.stacks[key] ?? 0) - quantity;
+function route(save: SaveData, direction: BankDirection): Route {
+    return direction === BankDirection.Deposit
+        ? {from: save.inventory, to: save.bank, free: BANK_SLOTS - bankUsed(save)}
+        : {from: save.bank, to: save.inventory, free: BAG_SLOTS - bagUsed(save)};
+}
+
+/** Moves up to `quantity` units of a stackable item. Returns false when there is nothing to move or the destination is full. */
+export function transferStack(save: SaveData, direction: BankDirection, key: ItemKey, quantity: number): boolean {
+    const r: Route = route(save, direction);
+    const amount: number = Math.min(quantity, r.from.stacks[key] ?? 0);
+    if (amount <= 0 || slotsNeeded(r.to, key, amount) > r.free) {
+        return false;
+    }
+    const left: number = (r.from.stacks[key] ?? 0) - amount;
     if (left > 0) {
-        from.stacks[key] = left;
+        r.from.stacks[key] = left;
     } else {
-        delete from.stacks[key];
+        delete r.from.stacks[key];
     }
-    to.stacks[key] = (to.stacks[key] ?? 0) + quantity;
-}
-
-/** Bag -> bank. Stacks move up to `quantity` (default: all). Returns false when the bank is full. */
-export function depositStack(save: SaveData, key: ItemKey, quantity?: number): boolean {
-    const amount: number = Math.min(quantity ?? Number.MAX_SAFE_INTEGER, save.inventory.stacks[key] ?? 0);
-    if (amount <= 0 || bankUsed(save) + slotsNeeded(save.bank, key, amount) > BANK_SLOTS) {
-        return false;
-    }
-    moveStack(save.inventory, save.bank, key, amount);
+    r.to.stacks[key] = (r.to.stacks[key] ?? 0) + amount;
     return true;
 }
 
-export function withdrawStack(save: SaveData, key: ItemKey, quantity?: number): boolean {
-    const amount: number = Math.min(quantity ?? Number.MAX_SAFE_INTEGER, save.bank.stacks[key] ?? 0);
-    if (amount <= 0 || bagUsed(save) + slotsNeeded(save.inventory, key, amount) > BAG_SLOTS) {
+/** Moves one unequipped piece of gear. Returns false when it is missing, equipped or the destination is full. */
+export function transferGear(save: SaveData, direction: BankDirection, uid: number): boolean {
+    const r: Route = route(save, direction);
+    const gear: GearInstance | undefined = r.from.gear.find((g: GearInstance) => g.uid === uid);
+    if (!gear || isEquipped(save, uid) || r.free <= 0) {
         return false;
     }
-    moveStack(save.bank, save.inventory, key, amount);
-    return true;
-}
-
-export function depositGear(save: SaveData, uid: number): boolean {
-    const gear: GearInstance | undefined = save.inventory.gear.find((g: GearInstance) => g.uid === uid);
-    if (!gear || isEquipped(save, uid) || bankUsed(save) >= BANK_SLOTS) {
-        return false;
-    }
-    save.inventory.gear = save.inventory.gear.filter((g: GearInstance) => g.uid !== uid);
-    save.bank.gear.push(gear);
-    return true;
-}
-
-export function withdrawGear(save: SaveData, uid: number): boolean {
-    const gear: GearInstance | undefined = save.bank.gear.find((g: GearInstance) => g.uid === uid);
-    if (!gear || bagUsed(save) >= BAG_SLOTS) {
-        return false;
-    }
-    save.bank.gear = save.bank.gear.filter((g: GearInstance) => g.uid !== uid);
-    save.inventory.gear.push(gear);
+    r.from.gear = r.from.gear.filter((g: GearInstance) => g.uid !== uid);
+    r.to.gear.push(gear);
     return true;
 }

@@ -6,28 +6,44 @@ import {MissionDef, MissionKey, MissionKind, MISSIONS} from "../data/missions";
 import {MonsterKey} from "../data/monsters";
 import {PerkDef, PerkKey, PERKS} from "../data/perks";
 import {countItem, removeItem} from "./inventory";
-import {MAX_LEVEL, perkRank, xpToNext} from "./hero-stats";
+import {StatBlock} from "../data/stat-block";
+import {computeHeroStats, MAX_LEVEL, perkRank, xpToNext} from "./hero-stats";
 
 // ---------------------------------------------------------------- XP / levels
 
-export function grantXp(save: SaveData, amount: number): number {
+export interface XpGain {
+    xp: number;
+    /** Levels gained right away (each one gives a talent point). */
+    levels: number;
+}
+
+export function grantXp(save: SaveData, amount: number): XpGain {
     const granted: number = Math.round(amount * (1 + 0.1 * perkRank(save, PerkKey.Scholar)));
     save.hero.xp += granted;
-    return granted;
+    return {xp: granted, levels: applyLevelUps(save)};
 }
 
-export function canLevelUp(save: SaveData): boolean {
-    return save.hero.level < MAX_LEVEL && save.hero.xp >= xpToNext(save.hero.level);
-}
-
-/** Spends XP for one level. Only called from the Guild. */
-export function levelUp(save: SaveData): boolean {
-    if (!canLevelUp(save)) {
-        return false;
+/**
+ * Converts stored XP into levels immediately. During a run the hero keeps the same missing HP/mana,
+ * so the extra maximum from the new level is usable at once.
+ */
+export function applyLevelUps(save: SaveData): number {
+    let levels: number = 0;
+    const before: StatBlock = computeHeroStats(save);
+    while (save.hero.level < MAX_LEVEL && save.hero.xp >= xpToNext(save.hero.level)) {
+        save.hero.xp -= xpToNext(save.hero.level);
+        save.hero.level++;
+        levels++;
     }
-    save.hero.xp -= xpToNext(save.hero.level);
-    save.hero.level++;
-    return true;
+    if (save.hero.level >= MAX_LEVEL) {
+        save.hero.xp = 0;
+    }
+    if (levels > 0 && save.run) {
+        const after: StatBlock = computeHeroStats(save);
+        save.run.hp = Math.min(after.hp, save.run.hp + Math.max(0, after.hp - before.hp));
+        save.run.mana = Math.min(after.mana, save.run.mana + Math.max(0, after.mana - before.mana));
+    }
+    return levels;
 }
 
 // ---------------------------------------------------------------- Missions
@@ -69,10 +85,6 @@ export function claimMission(save: SaveData, key: MissionKey): boolean {
     save.hero.diamonds += def.rewardDiamonds;
     save.missionsClaimed.push(key);
     return true;
-}
-
-export function claimableMissions(save: SaveData): number {
-    return (Object.keys(MISSIONS) as MissionKey[]).filter((key: MissionKey) => isMissionComplete(save, key) && !isMissionClaimed(save, key)).length;
 }
 
 // ---------------------------------------------------------------- Buildings
@@ -133,9 +145,14 @@ export function missingForClass(save: SaveData, classKey: ClassKey): ItemKey[] {
     return missing;
 }
 
+/** Only a Novice can transform, and only once: the chosen class is kept for the whole game. */
+export function canTransform(save: SaveData): boolean {
+    return save.hero.classKey === ClassKey.Novice && !save.run;
+}
+
 /** Consumes the tome and the two recipe items, unlocks and switches to the class. */
 export function transformClass(save: SaveData, classKey: ClassKey): boolean {
-    if (save.run || missingForClass(save, classKey).length > 0) {
+    if (!canTransform(save) || classKey === ClassKey.Novice || missingForClass(save, classKey).length > 0) {
         return false;
     }
     removeItem(save, ItemKey.ClassTome, 1);
@@ -153,11 +170,3 @@ export function unlockClass(save: SaveData, classKey: ClassKey): void {
     }
 }
 
-/** Switching between already unlocked classes is free, but only in town (the class is locked during a run). */
-export function switchClass(save: SaveData, classKey: ClassKey): boolean {
-    if (save.run || !save.hero.unlockedClasses.includes(classKey)) {
-        return false;
-    }
-    save.hero.classKey = classKey;
-    return true;
-}

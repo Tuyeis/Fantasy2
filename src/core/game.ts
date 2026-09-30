@@ -27,7 +27,6 @@ export class Game {
     public save: SaveData | null = null;
     public width: number = 0;
     public height: number = 0;
-    public time: number = 0;
     private dpr: number = 1;
     private scene: Scene | null = null;
     private lastTimestamp: number = 0;
@@ -72,10 +71,6 @@ export class Game {
         scene.enter();
     }
 
-    public get currentScene(): Scene | null {
-        return this.scene;
-    }
-
     public saveGame(): void {
         if (this.save) {
             writeSave(this.save);
@@ -112,7 +107,6 @@ export class Game {
     /** Advances the game by one frame. Errors are logged instead of stopping the loop. */
     public step(dt: number): void {
         try {
-            this.time += dt;
             if (this.save) {
                 this.save.records.playTime += dt;
             }

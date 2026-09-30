@@ -5,12 +5,12 @@ import {StatBlock, StatKey} from "../data/stat-block";
 import {StatusKey} from "../data/status-effect";
 
 /** Defense constant: damage = base * K / (K + defense). */
-export const DEFENSE_K: number = 45;
+const DEFENSE_K: number = 45;
 /** Minimum damage floor as a fraction of the raw attack. */
-export const MIN_DAMAGE_RATIO: number = 0.12;
-export const CRIT_MULTIPLIER: number = 1.6;
-export const GUARD_MULTIPLIER: number = 0.5;
-export const VARIANCE: number = 0.1;
+const MIN_DAMAGE_RATIO: number = 0.12;
+const CRIT_MULTIPLIER: number = 1.6;
+const GUARD_MULTIPLIER: number = 0.5;
+const VARIANCE: number = 0.1;
 
 export enum Side {
     Hero = "hero",

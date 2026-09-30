@@ -1,6 +1,6 @@
 import {chance, pick, shuffle, weightedPick} from "../core/rng";
 import {SaveData} from "../core/save-store";
-import {DungeonEventKey, FloorLayout, MonsterSpawn, RoomData, RoomType} from "../data/dungeon-types";
+import {Direction, DungeonEventKey, FloorLayout, MonsterSpawn, RoomData, RoomType} from "../data/dungeon-types";
 import {FloorDef, floorDef} from "../data/floors";
 import {MonsterKey} from "../data/monsters";
 import {PerkKey} from "../data/perks";
@@ -11,6 +11,28 @@ interface Cell {
     x: number;
     y: number;
 }
+
+interface Neighbour extends Cell {
+    /** Direction from the original cell to this one. */
+    dir: Direction;
+}
+
+export const DELTA: Record<Direction, {dx: number; dy: number}> = {
+    [Direction.North]: {dx: 0, dy: -1},
+    [Direction.South]: {dx: 0, dy: 1},
+    [Direction.East]: {dx: 1, dy: 0},
+    [Direction.West]: {dx: -1, dy: 0}
+};
+
+export const OPPOSITE: Record<Direction, Direction> = {
+    [Direction.North]: Direction.South,
+    [Direction.South]: Direction.North,
+    [Direction.East]: Direction.West,
+    [Direction.West]: Direction.East
+};
+
+/** Order in which neighbours are listed (it feeds the random picks, so it is kept stable). */
+const NEIGHBOUR_ORDER: Direction[] = [Direction.East, Direction.West, Direction.South, Direction.North];
 
 export function roomAt(layout: FloorLayout, x: number, y: number): RoomData | null {
     if (x < 0 || y < 0 || x >= layout.size || y >= layout.size) {
@@ -40,7 +62,7 @@ export function rollEvent(save: SaveData, layout: FloorLayout | null): DungeonEv
     return weightedPick(weights, (w: [DungeonEventKey, number]) => w[1])[0];
 }
 
-export function rollCrossroads(): RoomType[] {
+function rollCrossroads(): RoomType[] {
     const others: RoomType[] = shuffle([RoomType.Treasure, RoomType.Rest, RoomType.Event, RoomType.Combat]).slice(0, 2);
     return shuffle([RoomType.Combat, ...others]);
 }
@@ -54,27 +76,16 @@ function emptyRoom(x: number, y: number): RoomData {
     };
 }
 
-function connect(layout: FloorLayout, a: Cell, b: Cell): void {
-    const roomA: RoomData = roomAt(layout, a.x, a.y) as RoomData;
-    const roomB: RoomData = roomAt(layout, b.x, b.y) as RoomData;
-    if (b.x === a.x + 1) {
-        roomA.doors.e = true;
-        roomB.doors.w = true;
-    } else if (b.x === a.x - 1) {
-        roomA.doors.w = true;
-        roomB.doors.e = true;
-    } else if (b.y === a.y + 1) {
-        roomA.doors.s = true;
-        roomB.doors.n = true;
-    } else if (b.y === a.y - 1) {
-        roomA.doors.n = true;
-        roomB.doors.s = true;
-    }
+/** Opens a door from `a` towards its neighbour `b`, and the matching door back. */
+function connect(layout: FloorLayout, a: Cell, b: Neighbour): void {
+    (roomAt(layout, a.x, a.y) as RoomData).doors[b.dir] = true;
+    (roomAt(layout, b.x, b.y) as RoomData).doors[OPPOSITE[b.dir]] = true;
 }
 
-function neighbours(size: number, c: Cell): Cell[] {
-    const list: Cell[] = [{x: c.x + 1, y: c.y}, {x: c.x - 1, y: c.y}, {x: c.x, y: c.y + 1}, {x: c.x, y: c.y - 1}];
-    return list.filter((n: Cell) => n.x >= 0 && n.y >= 0 && n.x < size && n.y < size);
+function neighbours(size: number, c: Cell): Neighbour[] {
+    return NEIGHBOUR_ORDER
+        .map((dir: Direction) => ({x: c.x + DELTA[dir].dx, y: c.y + DELTA[dir].dy, dir: dir}))
+        .filter((n: Neighbour) => n.x >= 0 && n.y >= 0 && n.x < size && n.y < size);
 }
 
 /** Builds a floor: spanning tree of doors + a few loops, typed rooms, start bottom-left and boss top-right. */
@@ -97,12 +108,12 @@ export function generateFloor(save: SaveData, floor: number): FloorLayout {
     visited.add(layout.startX + "," + layout.startY);
     while (stack.length > 0) {
         const current: Cell = stack[stack.length - 1];
-        const options: Cell[] = neighbours(size, current).filter((n: Cell) => !visited.has(n.x + "," + n.y));
+        const options: Neighbour[] = neighbours(size, current).filter((n: Neighbour) => !visited.has(n.x + "," + n.y));
         if (options.length === 0) {
             stack.pop();
             continue;
         }
-        const next: Cell = pick(options);
+        const next: Neighbour = pick(options);
         connect(layout, current, next);
         visited.add(next.x + "," + next.y);
         stack.push(next);
@@ -128,22 +139,10 @@ export function generateFloor(save: SaveData, floor: number): FloorLayout {
     const others: RoomData[] = shuffle(layout.rooms.filter((r: RoomData) => r.type !== RoomType.Start && r.type !== RoomType.Boss));
     const m: number = others.length;
     const quota: RoomType[] = [];
-    const crossroads: number = Math.max(1, Math.round(m * 0.14));
-    const treasure: number = Math.max(1, Math.round(m * 0.14));
-    const events: number = Math.max(1, Math.round(m * 0.14));
-    const rests: number = Math.max(1, Math.round(m * 0.09));
-    for (let i: number = 0; i < crossroads; i++) {
-        quota.push(RoomType.Crossroads);
-    }
-    for (let i: number = 0; i < treasure; i++) {
-        quota.push(RoomType.Treasure);
-    }
-    for (let i: number = 0; i < events; i++) {
-        quota.push(RoomType.Event);
-    }
-    for (let i: number = 0; i < rests; i++) {
-        quota.push(RoomType.Rest);
-    }
+    quota.push(...new Array<RoomType>(Math.max(1, Math.round(m * 0.14))).fill(RoomType.Crossroads));
+    quota.push(...new Array<RoomType>(Math.max(1, Math.round(m * 0.14))).fill(RoomType.Treasure));
+    quota.push(...new Array<RoomType>(Math.max(1, Math.round(m * 0.14))).fill(RoomType.Event));
+    quota.push(...new Array<RoomType>(Math.max(1, Math.round(m * 0.09))).fill(RoomType.Rest));
     while (quota.length < m) {
         quota.push(RoomType.Combat);
     }

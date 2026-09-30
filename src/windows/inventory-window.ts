@@ -9,8 +9,10 @@ import {BAG_SLOTS, bagUsed} from "../logic/bank";
 import {computeHeroStats, potionMultiplier} from "../logic/hero-stats";
 import {equip, itemName, removeItem} from "../logic/inventory";
 import {iconImg} from "../render/item-icons";
-import {StorageCell, storageCells, storageGrid} from "./storage-grid";
-import {gearDescription, itemDescription, tag} from "./window-helpers";
+import {sameCell, StorageCell, storageCells, storageGrid} from "./storage-grid";
+import {isBarItem} from "../logic/action-bar";
+import {ActionBarSlot} from "../data/action-bar";
+import {fail, gearDescription, itemDescription, tag, walletLine} from "./window-helpers";
 
 export const SLOT_LABELS: Record<EquipSlot, UiKey> = {
     [EquipSlot.Weapon]: "slotWeapon",
@@ -65,20 +67,19 @@ export function openInventory(game: Game, opts: InventoryOptions): void {
     const render: () => void = () => {
         const stats: StatBlock = computeHeroStats(save);
         const cells: StorageCell[] = storageCells(save, save.inventory, true);
-        if (selected && !cells.some((c: StorageCell) => c.key === selected?.key && c.gear?.uid === selected?.gear?.uid)) {
-            selected = null;
-        }
-        const summary: HTMLElement = el("div", {cls: "hud-line", style: {marginBottom: "8px"}}, [
-            el("span", {}, [t("gold") + ": ", el("b", {text: String(save.hero.gold)})]),
-            el("span", {}, [t("diamonds") + ": ", el("b", {text: String(save.hero.diamonds)})]),
+        // Re-resolve the selection to this render's cell (null when that slot is gone).
+        const previous: StorageCell | null = selected;
+        selected = previous ? cells.find((c: StorageCell) => sameCell(c, previous)) ?? null : null;
+        const summary: HTMLElement = walletLine(save, [
             save.run ? tag(t("hp") + " " + save.run.hp + "/" + stats.hp, "bad") : null,
             save.run ? tag(t("mana") + " " + save.run.mana + "/" + stats.mana) : null
         ]);
         const used: number = bagUsed(save);
+        // Potions can be dragged onto the action bar.
         const grid: HTMLElement = storageGrid(cells, BAG_SLOTS, (cell: StorageCell) => {
             selected = cell;
             render();
-        }, selected);
+        }, selected, (cell: StorageCell) => !cell.gear && isBarItem(cell.key) ? {kind: ActionBarSlot.Kind.Item, item: cell.key} : null);
         const footer: HTMLElement = el("div", {cls: "bag-footer" + (used >= BAG_SLOTS ? " full" : ""), text: t("slotsUsed", {used: used, max: BAG_SLOTS})});
         win.body.replaceChildren(summary, grid, footer, detail(selected));
     };
@@ -104,8 +105,7 @@ export function openInventory(game: Game, opts: InventoryOptions): void {
                     game.ui.toast(t("usedItem", {item: itemName(cell.key)}), ToastKind.Good);
                     changed();
                 } else {
-                    game.audio.play(Sfx.Error);
-                    game.ui.toast(t("cannotUseHere"), ToastKind.Bad);
+                    fail(game, t("cannotUseHere"));
                 }
             }, {cls: "btn-small"}));
         }

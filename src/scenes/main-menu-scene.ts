@@ -13,17 +13,6 @@ import {openOptions} from "../windows/options-window";
 import {DungeonScene} from "./dungeon-scene";
 import {TownScene} from "./town-scene";
 
-export function creditsNode(): HTMLElement {
-    return el("div", {style: {textAlign: "center", lineHeight: "1.7"}}, [
-        el("div", {cls: "section-title", text: t("gameTitle")}),
-        el("div", {text: t("creditsDesign")}),
-        el("div", {cls: "muted", text: "Claude (Anthropic)"}),
-        el("div", {cls: "section-title", text: t("creditsFor")}),
-        el("div", {cls: "muted", text: t("creditsTech")}),
-        el("div", {cls: "section-title", text: t("creditsThanks")})
-    ]);
-}
-
 export class MainMenuScene implements Scene {
     public readonly music: MusicTrack = MusicTrack.Menu;
     private menu: HTMLElement | null = null;
@@ -66,7 +55,14 @@ export class MainMenuScene implements Scene {
         buttons.push(button(t("options"), () => openOptions(this.game), {cls: "btn-big"}));
         buttons.push(button(t("credits"), () => {
             const win: WindowHandle = this.game.ui.openWindow({title: t("credits"), cls: "window-small"});
-            win.body.append(creditsNode());
+            win.body.append(el("div", {style: {textAlign: "center", lineHeight: "1.7"}}, [
+                el("div", {cls: "section-title", text: t("gameTitle")}),
+                el("div", {text: t("creditsDesign")}),
+                el("div", {cls: "muted", text: "Claude (Anthropic)"}),
+                el("div", {cls: "section-title", text: t("creditsFor")}),
+                el("div", {cls: "muted", text: t("creditsTech")}),
+                el("div", {cls: "section-title", text: t("creditsThanks")})
+            ]));
             win.footer.append(button(t("close"), () => win.close(), {cls: "btn-primary"}));
         }, {cls: "btn-big"}));
         this.menu = el("div", {cls: "menu"}, [

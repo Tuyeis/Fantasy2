@@ -38,7 +38,7 @@ function magicalShare(def: MonsterDef): number {
     return total > 0 ? magical / total : 0;
 }
 
-export function encounterTrait(def: MonsterDef): EncounterTrait {
+function encounterTrait(def: MonsterDef): EncounterTrait {
     if (magicalShare(def) >= 0.5) {
         return EncounterTrait.Caster;
     }
@@ -78,12 +78,12 @@ export interface RealTimeBehaviour {
 export function realTimeBehaviour(def: MonsterDef): RealTimeBehaviour {
     switch (encounterTrait(def)) {
         case EncounterTrait.Heavy:
-            return {speed: 55, preferredRange: 0, windUp: 0.75, meleePower: 1.25, cooldown: 1.6, lungeSpeed: 0, volley: 0};
+            return {speed: 70, preferredRange: 0, windUp: 0.7, meleePower: 1.25, cooldown: 1.0, lungeSpeed: 0, volley: 0};
         case EncounterTrait.Swift:
-            return {speed: 130, preferredRange: 0, windUp: 0.28, meleePower: 0.8, cooldown: 1.0, lungeSpeed: 520, volley: 0};
+            return {speed: 150, preferredRange: 0, windUp: 0.28, meleePower: 0.8, cooldown: 0.6, lungeSpeed: 540, volley: 0};
         case EncounterTrait.Caster:
-            return {speed: 70, preferredRange: 210, windUp: 0.45, meleePower: 0.8, cooldown: 1.9, lungeSpeed: 0, volley: 3};
+            return {speed: 85, preferredRange: 210, windUp: 0.45, meleePower: 0.8, cooldown: 1.2, lungeSpeed: 0, volley: 4};
         default:
-            return {speed: 90, preferredRange: 0, windUp: 0.45, meleePower: 1.0, cooldown: 1.2, lungeSpeed: 0, volley: 0};
+            return {speed: 110, preferredRange: 0, windUp: 0.42, meleePower: 1.0, cooldown: 0.7, lungeSpeed: 0, volley: 0};
     }
 }

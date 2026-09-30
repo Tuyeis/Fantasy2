@@ -226,7 +226,3 @@ export function isGear(key: ItemKey): boolean {
 export function sellPrice(key: ItemKey): number {
     return Math.max(1, Math.floor(ITEMS[key].price / 2));
 }
-
-export function isItemKey(value: string): value is ItemKey {
-    return (Object.values(ItemKey) as string[]).includes(value);
-}

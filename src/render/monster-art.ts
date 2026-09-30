@@ -1,3 +1,6 @@
+import {ease, loadImage} from "./draw-utils";
+import {fetchOptionalJson, recolor, toEnum} from "./puppet/puppet-loader";
+
 /**
  * Painted single-sprite monsters (creatures that are not cut into a puppet: slimes, beasts, flyers, spirits...).
  * Each sprite is animated in code with a movement style. Files: public/art/monsters/<key>.png + <key>.json.
@@ -42,40 +45,18 @@ interface SpriteFrame {
 const MONSTER_BASE: string = "art/monsters/";
 const sprites: Map<string, MonsterSprite> = new Map<string, MonsterSprite>();
 
-function toAnim(raw: string): MonsterAnim {
-    const known: boolean = (Object.values(MonsterAnim) as string[]).includes(raw);
-    if (!known) {
-        console.error("Unknown monster animation style, using blob:", raw);
-        return MonsterAnim.Blob;
-    }
-    return raw as MonsterAnim;
-}
-
 async function loadOne(key: string): Promise<void> {
-    try {
-        const res: Response = await fetch(MONSTER_BASE + key + ".json");
-        if (!res.ok || !(res.headers.get("content-type") ?? "").includes("json")) {
-            return;
-        }
-        const meta: MonsterSpriteMeta = await res.json() as MonsterSpriteMeta;
-        const img: HTMLImageElement = await new Promise<HTMLImageElement>((resolve: (i: HTMLImageElement) => void, reject: (e: Error) => void) => {
-            const i: HTMLImageElement = new Image();
-            i.onload = () => resolve(i);
-            i.onerror = () => reject(new Error("image failed: " + key));
-            i.src = MONSTER_BASE + key + ".png";
-        });
-        const white: HTMLCanvasElement = document.createElement("canvas");
-        white.width = img.width;
-        white.height = img.height;
-        const g: CanvasRenderingContext2D = white.getContext("2d") as CanvasRenderingContext2D;
-        g.drawImage(img, 0, 0);
-        g.globalCompositeOperation = "source-in";
-        g.fillStyle = "#ffffff";
-        g.fillRect(0, 0, white.width, white.height);
-        sprites.set(key, {meta: meta, anim: toAnim(meta.anim), img: img, white: white});
-    } catch (err: unknown) {
-        console.error("Monster sprite failed to load, using procedural drawing:", key, err);
+    const meta: MonsterSpriteMeta | undefined = await fetchOptionalJson<MonsterSpriteMeta>(MONSTER_BASE + key + ".json");
+    if (!meta) {
+        return;
     }
+    const img: HTMLImageElement | undefined = await loadImage(MONSTER_BASE + key + ".png");
+    if (!img) {
+        console.error("Monster sprite failed to load:", key);
+        return;
+    }
+    const anim: MonsterAnim = toEnum(MonsterAnim, meta.anim, MonsterAnim.Blob, "Unknown monster animation style, using blob:");
+    sprites.set(key, {meta: meta, anim: anim, img: img, white: recolor(img, undefined)});
 }
 
 export function preloadMonsterArt(keys: string[]): Promise<void> {
@@ -85,8 +66,6 @@ export function preloadMonsterArt(keys: string[]): Promise<void> {
 export function getMonsterSprite(key: string): MonsterSprite | undefined {
     return sprites.get(key);
 }
-
-const ease: (k: number) => number = (k: number): number => 1 - Math.pow(1 - k, 3);
 
 /** Offsets are in sprite pixels at scale 1; forward is -x (sprites face left). */
 function frameOf(anim: MonsterAnim, time: number, attack: number, moving: boolean): SpriteFrame {

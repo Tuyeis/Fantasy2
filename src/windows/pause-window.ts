@@ -7,22 +7,21 @@ export interface PauseOptions {
     inDungeon: boolean;
     onInventory: () => void;
     onCharacter: () => void;
+    onTalents: () => void;
     onAbandon: () => void;
     onQuitToMenu: () => void;
 }
 
 export function openPause(game: Game, opts: PauseOptions): void {
     const win: WindowHandle = game.ui.openWindow({title: t("paused"), cls: "window-small"});
+    // Buttons that close the pause menu and open another window.
+    const closeThen: [string, () => void][] = [[t("bag"), opts.onInventory], [t("character"), opts.onCharacter], [t("talents"), opts.onTalents]];
     const buttons: HTMLElement[] = [
         button(t("resume"), () => win.close(), {cls: "btn-primary"}),
-        button(t("bag"), () => {
+        ...closeThen.map((entry: [string, () => void]) => button(entry[0], () => {
             win.close();
-            opts.onInventory();
-        }),
-        button(t("character"), () => {
-            win.close();
-            opts.onCharacter();
-        }),
+            entry[1]();
+        })),
         button(t("options"), () => openOptions(game))
     ];
     if (!opts.inDungeon) {

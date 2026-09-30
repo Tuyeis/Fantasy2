@@ -270,6 +270,13 @@ html, body {
     border-radius: 7px;
 }
 
+/* Class hero portrait in the class library and preparation rows (size set inline). */
+.class-portrait {
+    flex: none;
+    background: radial-gradient(circle at 50% 60%, rgba(245, 197, 66, 0.18), rgba(0, 0, 0, 0.25));
+    border-radius: 8px;
+}
+
 .row.highlight {
     border-color: var(--gold);
     box-shadow: 0 0 10px rgba(245, 197, 66, 0.25);
@@ -501,7 +508,7 @@ html, body {
 
 .hud-hint {
     position: absolute;
-    bottom: 14px;
+    bottom: 84px;
     left: 50%;
     transform: translateX(-50%);
     background: rgba(20, 16, 28, 0.88);
@@ -520,14 +527,15 @@ html, body {
 .hud-controls {
     position: absolute;
     bottom: 10px;
-    right: 12px;
+    left: 12px;
     font-size: 12px;
     color: var(--text-dim);
     background: rgba(20, 16, 28, 0.7);
     padding: 5px 10px;
     border-radius: 6px;
     pointer-events: none;
-    max-width: 60vw;
+    /* Sits left of the action bar; hidden below 1100px (see the action bar section). */
+    max-width: calc(50vw - 300px);
     text-align: right;
 }
 
@@ -537,13 +545,6 @@ html, body {
     right: 12px;
     display: flex;
     gap: 6px;
-}
-
-.hud-minimap {
-    position: absolute;
-    top: 56px;
-    right: 12px;
-    pointer-events: none;
 }
 
 .companion-chips {
@@ -846,10 +847,6 @@ html, body {
     .grid-2 {
         grid-template-columns: 1fr;
     }
-
-    .hud-controls {
-        display: none;
-    }
 }
 
 /* ---------------------------------------------------------------- bag / bank / character sheet */
@@ -1031,4 +1028,332 @@ html, body {
     .bank-columns {
         grid-template-columns: 1fr;
     }
+}
+
+/* ---------------------------------------------------------------- talents */
+
+.window-talents {
+    width: min(920px, 100%);
+}
+
+.talent-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+
+.talent-trees {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 12px;
+}
+
+.talent-tree {
+    flex: 1 1 250px;
+    max-width: 320px;
+    padding: 10px 8px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: linear-gradient(180deg, rgba(40, 32, 52, 0.85), rgba(16, 13, 22, 0.9));
+}
+
+.talent-tree-title {
+    text-align: center;
+    font-family: var(--title-font);
+    font-size: 16px;
+    color: #ffe8a3;
+    margin-bottom: 8px;
+}
+
+.talent-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    padding: 5px 0;
+    border-top: 1px dashed rgba(245, 197, 66, 0.15);
+}
+
+.talent-row.closed {
+    opacity: 0.55;
+}
+
+.talent-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    min-height: 70px;
+}
+
+.talent-node {
+    position: relative;
+    width: 46px;
+    height: 46px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 9px;
+    border: 2px solid #4a4452;
+    background: rgba(0, 0, 0, 0.45);
+    cursor: default;
+}
+
+.talent-node.locked > img,
+.talent-node.locked > .talent-glyph,
+.talent-node.open > img,
+.talent-node.open > .talent-glyph {
+    filter: grayscale(1) brightness(0.6);
+}
+
+.talent-node.available {
+    border-color: #69db7c;
+    box-shadow: 0 0 8px rgba(105, 219, 124, 0.45);
+    cursor: pointer;
+}
+
+.talent-node.learned {
+    border-color: #69db7c;
+    cursor: pointer;
+}
+
+.talent-node.maxed {
+    border-color: #f5c542;
+    box-shadow: 0 0 8px rgba(245, 197, 66, 0.4);
+}
+
+.talent-node.grants {
+    border-radius: 50%;
+}
+
+.talent-node.grants > img {
+    border-radius: 50% !important;
+}
+
+.talent-node.capstone {
+    width: 52px;
+    height: 52px;
+}
+
+.talent-glyph {
+    font-size: 24px;
+    line-height: 1;
+    text-shadow: 0 1px 3px #000;
+}
+
+.talent-rank {
+    position: absolute;
+    right: -6px;
+    bottom: -6px;
+    padding: 0 4px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #fff;
+    background: #1b1622;
+    border: 1px solid #5c5366;
+}
+
+.talent-node.maxed .talent-rank {
+    color: #ffe066;
+}
+
+.talent-name {
+    font-size: 11px;
+    text-align: center;
+    line-height: 1.15;
+    color: #cfc6da;
+    max-width: 110px;
+}
+
+.talent-novice {
+    margin-top: 10px;
+}
+
+.hotbar-key {
+    position: absolute;
+    left: 3px;
+    top: 1px;
+    font-weight: 800;
+    font-size: 13px;
+    color: #ffe066;
+    text-shadow: 0 1px 2px #000;
+}
+
+/* ---------------------------------------------------------------- action bar (keys 1-8) */
+
+.ability-hotbar {
+    position: absolute;
+    left: 50%;
+    bottom: 16px;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 6px;
+    padding: 6px;
+    border-radius: 12px;
+    background: rgba(14, 11, 20, 0.78);
+    border: 1px solid var(--border);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+    pointer-events: auto;
+}
+
+.hotbar-slot {
+    position: relative;
+    width: 52px;
+    height: 52px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 9px;
+    background: rgba(0, 0, 0, 0.45);
+    border: 1px solid #4a4452;
+    cursor: pointer;
+    overflow: hidden;
+    user-select: none;
+}
+
+.hotbar-slot.empty {
+    border-style: dashed;
+    cursor: default;
+}
+
+.hotbar-slot.no-mana > img,
+.hotbar-slot.empty-stack > img {
+    filter: grayscale(0.8) brightness(0.7);
+}
+
+.hotbar-slot.drop-target {
+    border-color: #69db7c;
+    box-shadow: 0 0 10px rgba(105, 219, 124, 0.6);
+}
+
+.hotbar-shade {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 0%;
+    background: rgba(10, 8, 16, 0.72);
+    pointer-events: none;
+}
+
+.hotbar-cd {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    font-size: 16px;
+    color: #fff;
+    text-shadow: 0 1px 3px #000;
+    pointer-events: none;
+}
+
+.hotbar-cost, .hotbar-count {
+    position: absolute;
+    right: 3px;
+    bottom: 1px;
+    font-weight: 700;
+    font-size: 11px;
+    text-shadow: 0 1px 2px #000;
+    pointer-events: none;
+}
+
+.hotbar-cost {
+    color: #74c0fc;
+}
+
+.hotbar-count {
+    color: #fff;
+}
+
+.hotbar-slot .hotbar-key {
+    pointer-events: none;
+}
+
+.action-draggable {
+    cursor: grab;
+}
+
+.dragging-action, .dragging-action * {
+    cursor: grabbing !important;
+}
+
+.action-drag-ghost {
+    position: fixed;
+    z-index: 10000;
+    pointer-events: none;
+    transform: translate(-50%, -50%);
+    opacity: 0.85;
+    filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.6));
+}
+
+.action-drag-ghost img {
+    width: 44px !important;
+    height: 44px !important;
+}
+
+.spellbook {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0 0 10px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    background: rgba(245, 197, 66, 0.07);
+    font-size: 13px;
+}
+
+.spellbook-spell {
+    border-radius: 8px;
+    box-shadow: 0 0 0 1px rgba(245, 197, 66, 0.4);
+}
+
+/* No room for the controls line beside the action bar. */
+@media (max-width: 1100px) {
+    .hud-controls {
+        display: none;
+    }
+}
+
+/* ---------------------------------------------------------------- testing trainer (dev server only) */
+
+.dev-level {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.dev-classes {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+    gap: 8px;
+}
+
+.dev-class {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 6px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    font-size: 13px;
+    text-align: center;
+    cursor: pointer;
+}
+
+.dev-class:hover {
+    border-color: var(--gold-dim);
+}
+
+.dev-class.current {
+    border-color: #69db7c;
+    cursor: default;
 }

@@ -49,13 +49,13 @@ async function exists(url) { try { const r = await fetch(url, {method: "HEAD"});
 (async () => {
   for (const [key, name, tag] of PUPPETS) {
     const st = card(document.getElementById("puppets"), name, tag);
-    if (await exists("puppets/" + key + "/side/rig.json")) {
+    if (await exists("../art/puppets/" + key + "/side/rig.json")) {
       const f = document.createElement("iframe"); f.src = "puppet.html?embed=1&cls=" + key; f.loading = "lazy"; st.appendChild(f);
     } else { st.innerHTML = '<div class="pending">pendiente de regenerar</div>'; }
   }
   for (const [key, name, tag] of SINGLES) {
     const st = card(document.getElementById("singles"), name, tag);
-    if (await exists("monsters/" + key + ".json")) { startSingle(st, key); }
+    if (await exists("../art/monsters/" + key + ".json")) { startSingle(st, key); }
     else { st.innerHTML = '<div class="pending">generándose…</div>'; }
   }
 })();
@@ -68,8 +68,8 @@ const ease = k => 1 - Math.pow(1 - k, 3);
 const PHASES = [["walk", 1.6], ["attack", .9], ["idle", 1.0], ["hurt", .7]];
 
 async function startSingle(stage, key) {
-  const meta = await (await fetch("monsters/" + key + ".json")).json();
-  const img = await loadImg("monsters/" + key + ".png"), white = whiteOf(img);
+  const meta = await (await fetch("../art/monsters/" + key + ".json")).json();
+  const img = await loadImg("../art/monsters/" + key + ".png"), white = whiteOf(img);
   const cv = document.createElement("canvas"); stage.appendChild(cv);
   const ctx = cv.getContext("2d"); const DPR = Math.min(2, devicePixelRatio || 1);
   let t0 = performance.now() + Math.random() * 3000;

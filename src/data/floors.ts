@@ -19,8 +19,6 @@ export interface FloorDef {
     dropChance: number;
     loot: LootEntry[];
     /** Colours of the dungeon theme. */
-    floorColor: string;
-    floorAlt: string;
     wallColor: string;
     wallTop: string;
 }
@@ -89,19 +87,19 @@ export const FLOORS: FloorDef[] = [
         floor: 1, size: 3, rewardCap: 5,
         pool: [MonsterKey.Slime, MonsterKey.Rat, MonsterKey.Bat, MonsterKey.Goblin, MonsterKey.Mushroom, MonsterKey.Wolf],
         boss: MonsterKey.GoblinKing, armoredChance: 0.12, dropChance: 0.55, loot: LOOT_TIER_1,
-        floorColor: "#665b4a", floorAlt: "#6e6352", wallColor: "#2b2620", wallTop: "#7d6e57"
+        wallColor: "#2b2620", wallTop: "#7d6e57"
     },
     {
         floor: 2, size: 4, rewardCap: 8,
         pool: [MonsterKey.Skeleton, MonsterKey.Orc, MonsterKey.FireImp, MonsterKey.IceWisp, MonsterKey.GiantSpider, MonsterKey.Harpy, MonsterKey.Zombie],
         boss: MonsterKey.FrostHydra, armoredChance: 0.2, dropChance: 0.5, loot: LOOT_TIER_2,
-        floorColor: "#48596b", floorAlt: "#4f6275", wallColor: "#1b232c", wallTop: "#62809c"
+        wallColor: "#1b232c", wallTop: "#62809c"
     },
     {
         floor: 3, size: 5, rewardCap: 11,
         pool: [MonsterKey.Minotaur, MonsterKey.DarkKnight, MonsterKey.Lich, MonsterKey.FireDrake, MonsterKey.Golem, MonsterKey.Succubus, MonsterKey.Wraith],
         boss: MonsterKey.VoidSovereign, armoredChance: 0.28, dropChance: 0.45, loot: LOOT_TIER_3,
-        floorColor: "#503e5a", floorAlt: "#584563", wallColor: "#1a121e", wallTop: "#86649a"
+        wallColor: "#1a121e", wallTop: "#86649a"
     }
 ];
 

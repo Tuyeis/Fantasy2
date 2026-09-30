@@ -2,7 +2,7 @@ import {Sfx} from "../core/audio-engine";
 import {Game} from "../core/game";
 import {t, tr} from "../core/i18n";
 import {SaveData} from "../core/save-store";
-import {el, ToastKind, WindowHandle} from "../core/ui";
+import {button, el, WindowHandle} from "../core/ui";
 import {GearInstance} from "../data/dungeon-types";
 import {CLASSES} from "../data/hero-classes";
 import {EquipSlot} from "../data/items";
@@ -10,12 +10,14 @@ import {StatBlock} from "../data/stat-block";
 import {BAG_SLOTS, bagUsed} from "../logic/bank";
 import {computeHeroStats} from "../logic/hero-stats";
 import {findGear, itemName, unequip} from "../logic/inventory";
+import {availableTalentPoints} from "../logic/talents";
 import {drawClassHero} from "../render/class-hero";
 import {defaultPose} from "../render/hero-sprite";
 import {iconImg} from "../render/item-icons";
 import {PuppetView} from "../render/puppet/puppet-types";
 import {clampRunToStats, SLOT_LABELS} from "./inventory-window";
-import {gearDescription, statTable} from "./window-helpers";
+import {openTalents} from "./talent-window";
+import {fail, gearDescription, statTable} from "./window-helpers";
 
 const LEFT_SLOTS: EquipSlot[] = [EquipSlot.Helmet, EquipSlot.Armor, EquipSlot.Accessory];
 const RIGHT_SLOTS: EquipSlot[] = [EquipSlot.Weapon, EquipSlot.Shield, EquipSlot.Boots];
@@ -70,8 +72,7 @@ export function openCharacter(game: Game, opts: CharacterOptions): void {
             // Click: take it off (back into the bag, if it fits).
             node.addEventListener("click", () => {
                 if (bagUsed(save) >= BAG_SLOTS) {
-                    game.audio.play(Sfx.Error);
-                    game.ui.toast(t("unequipBagFull"), ToastKind.Bad);
+                    fail(game, t("unequipBagFull"));
                     return;
                 }
                 unequip(save, slot);
@@ -94,7 +95,11 @@ export function openCharacter(game: Game, opts: CharacterOptions): void {
                 portrait,
                 el("div", {cls: "char-column"}, RIGHT_SLOTS.map(slotEl))
             ]),
-            statTable(stats)
+            statTable(stats),
+            el("div", {style: {marginTop: "10px", textAlign: "center"}}, [button(t("talents") + " (N) · " + t("talentPointsFree", {n: availableTalentPoints(save)}), () => {
+                win.close();
+                openTalents(game, {onChange: opts.onChange});
+            }, {cls: "btn-small" + (availableTalentPoints(save) > 0 ? " btn-primary" : "")})])
         );
     };
     render();

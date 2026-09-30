@@ -5,9 +5,10 @@ import {ITEMS} from "../data/items";
 import {PerkKey} from "../data/perks";
 import {addStats, roundStats, StatBlock} from "../data/stat-block";
 import {equippedGear} from "./inventory";
+import {applyTalentStats} from "./talents";
 
 export const MAX_LEVEL: number = 30;
-export const FORGE_BONUS_PER_PLUS: number = 0.2;
+const FORGE_BONUS_PER_PLUS: number = 0.2;
 export const MAX_FORGE_PLUS: number = 5;
 
 export function perkRank(save: SaveData, perk: PerkKey): number {
@@ -18,7 +19,7 @@ export function xpToNext(level: number): number {
     return Math.round(30 * Math.pow(level, 1.45));
 }
 
-export function classStatsAtLevel(classKey: ClassKey, level: number): StatBlock {
+function classStatsAtLevel(classKey: ClassKey, level: number): StatBlock {
     const def: ClassDef = CLASSES[classKey];
     return addStats(def.base, def.growth, level - 1);
 }
@@ -27,7 +28,7 @@ export function gearFactor(plus: number): number {
     return 1 + FORGE_BONUS_PER_PLUS * plus;
 }
 
-export function gearStats(gear: GearInstance): Partial<StatBlock> {
+function gearStats(gear: GearInstance): Partial<StatBlock> {
     const base: Partial<StatBlock> = ITEMS[gear.key].stats ?? {};
     const scaled: Partial<StatBlock> = {};
     const factor: number = gearFactor(gear.plus);
@@ -46,6 +47,7 @@ export function computeHeroStats(save: SaveData): StatBlock {
     result.hp *= 1 + 0.1 * perkRank(save, PerkKey.Vitality);
     result.mana *= 1 + 0.1 * perkRank(save, PerkKey.ArcaneWell);
     result.crit += 3 * perkRank(save, PerkKey.Lucky);
+    result = applyTalentStats(save, result);
     if (save.run) {
         for (const buff of save.run.buffs) {
             if (buff === RunBuffKey.Atk) {

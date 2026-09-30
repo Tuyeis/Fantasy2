@@ -1,13 +1,11 @@
-/**
- * Painted dungeon art (public/art/dungeon/): battle backdrops and room floors per floor, and props.
- * Everything is optional: missing files keep the procedural drawing.
- */
+import {loadImage} from "./draw-utils";
+
+/** Painted dungeon art (public/art/dungeon/): battle backdrops and room floors per floor, and props. */
 
 export enum DungeonProp {
     Chest = "chest",
     ChestOpen = "chest_open",
     Campfire = "campfire",
-    CampfireOut = "campfire_out",
     Shrine = "shrine",
     Pedestal = "pedestal",
     Stairs = "stairs",
@@ -21,16 +19,11 @@ const FLOORS: number[] = [1, 2, 3];
 
 const images: Map<string, HTMLImageElement> = new Map<string, HTMLImageElement>();
 
-function load(key: string, src: string): Promise<void> {
-    return new Promise<void>((resolve: () => void) => {
-        const img: HTMLImageElement = new Image();
-        img.onload = () => {
-            images.set(key, img);
-            resolve();
-        };
-        img.onerror = () => resolve();
-        img.src = src;
-    });
+async function load(key: string, src: string): Promise<void> {
+    const img: HTMLImageElement | undefined = await loadImage(src);
+    if (img) {
+        images.set(key, img);
+    }
 }
 
 export function preloadDungeonArt(): Promise<void> {
@@ -63,15 +56,11 @@ export function roomFloor(floor: number, seed: number): HTMLImageElement | undef
     return variants[Math.abs(seed) % variants.length];
 }
 
-export function propArt(prop: DungeonProp): HTMLImageElement | undefined {
-    return images.get("prop_" + prop);
-}
-
 /** Draws a prop standing on (x, bottom) with the given on-screen height. */
-export function drawProp(ctx: CanvasRenderingContext2D, prop: DungeonProp, x: number, bottom: number, height: number): boolean {
+export function drawProp(ctx: CanvasRenderingContext2D, prop: DungeonProp, x: number, bottom: number, height: number): void {
     const img: HTMLImageElement | undefined = images.get("prop_" + prop);
     if (!img) {
-        return false;
+        return;
     }
     const w: number = img.width * height / img.height;
     ctx.save();
@@ -81,5 +70,4 @@ export function drawProp(ctx: CanvasRenderingContext2D, prop: DungeonProp, x: nu
     ctx.fill();
     ctx.drawImage(img, x - w / 2, bottom - height, w, height);
     ctx.restore();
-    return true;
 }

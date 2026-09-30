@@ -1,5 +1,5 @@
 import {ALL_BUILDINGS, BuildingDef, BuildingKey, BUILDINGS} from "../data/buildings";
-import {ClassKey, HatStyle, HeroLook, WeaponStyle, EarStyle, TailStyle} from "../data/hero-classes";
+import {ClassKey} from "../data/hero-classes";
 import {hash} from "../render/draw-utils";
 
 export const TOWN_W: number = 48;
@@ -9,7 +9,6 @@ export const TILE: number = 32;
 export enum TownTile {
     Grass = "grass",
     Path = "path",
-    Plaza = "plaza",
     Water = "water"
 }
 
@@ -31,30 +30,22 @@ export interface TownNpc {
     building: BuildingKey;
     x: number;
     y: number;
-    look: HeroLook;
-    /** Painted puppet of this villager (a class puppet); `look` is the procedural fallback. */
+    /** Painted puppet of this villager (a class puppet). */
     puppetClass: ClassKey;
-    facing: number;
 }
 
 export interface TownMap {
     tiles: TownTile[];
     decor: TownDecor[];
     npcs: TownNpc[];
-    fountainX: number;
-    fountainY: number;
 }
 
-export const PLAZA_X: number = 24;
-export const PLAZA_Y: number = 16;
+const PLAZA_X: number = 24;
+const PLAZA_Y: number = 16;
 
 /** World position right in front of a building's door. */
 export function doorPoint(def: BuildingDef): {x: number; y: number} {
     return {x: (def.tx + def.tw / 2) * TILE, y: (def.ty + def.th) * TILE + 14};
-}
-
-function npcLook(skin: string, hair: string, outfit: string, dark: string, accent: string, hat: HatStyle, weapon: WeaponStyle, extra: Partial<HeroLook> = {}): HeroLook {
-    return {skin: skin, hair: hair, outfit: outfit, outfitDark: dark, accent: accent, hat: hat, weapon: weapon, ears: EarStyle.Human, tail: TailStyle.None, cape: null, shield: false, ...extra};
 }
 
 /** Which class puppet stands in front of each building (the villagers are adventurers of those classes). */
@@ -65,15 +56,6 @@ const NPC_CLASSES: Partial<Record<BuildingKey, ClassKey>> = {
     [BuildingKey.ClassLibrary]: ClassKey.Mage,
     [BuildingKey.Coliseum]: ClassKey.Swordsman,
     [BuildingKey.Portal]: ClassKey.DarkElf
-};
-
-const NPC_LOOKS: Partial<Record<BuildingKey, HeroLook>> = {
-    [BuildingKey.Shop]: npcLook("#e0ac69", "#8d5524", "#e8590c", "#8a3b0a", "#fff4e6", HatStyle.Headband, WeaponStyle.Dagger),
-    [BuildingKey.Guild]: npcLook("#c68642", "#dee2e6", "#1864ab", "#0b3b6b", "#fcc419", HatStyle.None, WeaponStyle.Sword, {cape: "#1c7ed6"}),
-    [BuildingKey.Forge]: npcLook("#f1c27d", "#3b2a1a", "#495057", "#212529", "#ff922b", HatStyle.Headband, WeaponStyle.Pole),
-    [BuildingKey.ClassLibrary]: npcLook("#f8d7b5", "#e9ecef", "#7048e8", "#43269e", "#ffd43b", HatStyle.WizardHat, WeaponStyle.Staff, {ears: EarStyle.Elf}),
-    [BuildingKey.Coliseum]: npcLook("#8d5524", "#212529", "#b08900", "#6b5300", "#e03131", HatStyle.Helmet, WeaponStyle.Sword, {shield: true}),
-    [BuildingKey.Portal]: npcLook("#f1e3d3", "#adb5bd", "#343a40", "#1e2124", "#b197fc", HatStyle.Hood, WeaponStyle.Staff)
 };
 
 export function buildTownMap(): TownMap {
@@ -117,8 +99,6 @@ export function buildTownMap(): TownMap {
         hLine(doorX - 1, PLAZA_X, doorY + 1);
         vLine(PLAZA_X, doorY + 1, PLAZA_Y);
     }
-
-    // No paved plaza for now: the paths simply meet at a dirt crossroads in the centre.
 
     const insideBuilding: (x: number, y: number, margin: number) => boolean = (x: number, y: number, margin: number) => ALL_BUILDINGS.some((key: BuildingKey) => {
         const def: BuildingDef = BUILDINGS[key];
@@ -166,16 +146,15 @@ export function buildTownMap(): TownMap {
 
     const npcs: TownNpc[] = [];
     for (const key of ALL_BUILDINGS) {
-        const look: HeroLook | undefined = NPC_LOOKS[key];
-        if (!look) {
+        const puppetClass: ClassKey | undefined = NPC_CLASSES[key];
+        if (!puppetClass) {
             continue;
         }
-        const def: BuildingDef = BUILDINGS[key];
-        const door: {x: number; y: number} = doorPoint(def);
-        npcs.push({building: key, x: door.x + 40, y: door.y + 4, look: look, puppetClass: NPC_CLASSES[key] ?? ClassKey.Novice, facing: -1});
+        const door: {x: number; y: number} = doorPoint(BUILDINGS[key]);
+        npcs.push({building: key, x: door.x + 40, y: door.y + 4, puppetClass: puppetClass});
     }
 
-    return {tiles: tiles, decor: decor, npcs: npcs, fountainX: (PLAZA_X + 0.5) * TILE, fountainY: (PLAZA_Y + 1) * TILE};
+    return {tiles: tiles, decor: decor, npcs: npcs};
 }
 
 export function tileAt(map: TownMap, x: number, y: number): TownTile {

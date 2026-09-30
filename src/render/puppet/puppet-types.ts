@@ -36,9 +36,7 @@ export enum WeaponType {
 
 export enum PuppetAction {
     None = "none",
-    Attack = "attack",
-    Cast = "cast",
-    Dash = "dash"
+    Attack = "attack"
 }
 
 export type Point = [number, number];

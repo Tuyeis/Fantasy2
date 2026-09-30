@@ -1,4 +1,3 @@
-import {ClassKey} from "./hero-classes";
 import {CompanionKey} from "./companions";
 import {EquipSlot, ItemKey} from "./items";
 import {MonsterKey} from "./monsters";
@@ -106,8 +105,6 @@ export interface RunSnapshot {
 }
 
 export interface RunData {
-    classKey: ClassKey;
-    startFloor: number;
     floor: number;
     layout: FloorLayout;
     roomX: number;
@@ -127,5 +124,4 @@ export interface RunData {
     goldEarned: number;
     kills: number;
     nextDropId: number;
-    bossDefeated: boolean;
 }

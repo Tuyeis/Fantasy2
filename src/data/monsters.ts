@@ -30,10 +30,12 @@ export enum MonsterKey {
 
     GoblinKing = "goblin_king",
     FrostHydra = "frost_hydra",
-    VoidSovereign = "void_sovereign"
+    VoidSovereign = "void_sovereign",
+    // Town practice target: never in a floor pool, no attacks, no rewards.
+    TrainingDummy = "training_dummy"
 }
 
-/** Visual body template used by the procedural sprite renderer. */
+/** Body template; logic/encounter-mode derives movement traits from it. */
 export enum MonsterBody {
     Blob = "blob",
     Beast = "beast",
@@ -91,40 +93,18 @@ const M: DamageType = DamageType.Magical;
 const BITE: LocalizedText = L("Mordisco", "Bite", "Biss");
 const CLAW: LocalizedText = L("Zarpazo", "Claw", "Klaue");
 
-interface MonsterSpec {
-    key: MonsterKey;
-    name: LocalizedText;
-    tier: number;
-    stats: StatBlock;
-    element: Element;
-    weak: Element[];
-    resist: Element[];
-    attacks: MonsterAttack[];
-    xp: number;
-    gold: number;
-    body: MonsterBody;
+type MonsterDefault = "boss" | "diamonds" | "size" | "enrageExtraActions";
+
+/** MonsterDef as written in the table: colors as a tuple, defaulted fields optional, controlResistant derived from boss. */
+interface MonsterSpec extends Omit<MonsterDef, MonsterDefault | "colors" | "controlResistant">, Partial<Pick<MonsterDef, MonsterDefault>> {
     colors: [string, string, string];
-    size?: number;
-    boss?: boolean;
-    diamonds?: number;
-    enrageExtraActions?: number;
 }
 
 function monster(spec: MonsterSpec): MonsterDef {
     return {
-        key: spec.key,
-        name: spec.name,
-        tier: spec.tier,
+        ...spec,
         boss: spec.boss ?? false,
-        stats: spec.stats,
-        element: spec.element,
-        weak: spec.weak,
-        resist: spec.resist,
-        attacks: spec.attacks,
-        xp: spec.xp,
-        gold: spec.gold,
         diamonds: spec.diamonds ?? 0,
-        body: spec.body,
         colors: {main: spec.colors[0], dark: spec.colors[1], accent: spec.colors[2]},
         size: spec.size ?? 1,
         enrageExtraActions: spec.enrageExtraActions ?? 0,
@@ -209,7 +189,9 @@ const MONSTER_LIST: MonsterDef[] = [
         xp: 400, gold: 350, diamonds: 2, body: MonsterBody.Hydra, colors: ["#74c0fc", "#1864ab", "#e7f5ff"], size: 1.7, enrageExtraActions: 1}),
     monster({key: MonsterKey.VoidSovereign, name: L("Soberano del Vacío", "Void Sovereign", "Leeren-Souverän"), tier: 3, boss: true, stats: stats(1150, 0, 42, 25, 44, 25, 10), element: Element.Dark, weak: [Element.Holy], resist: [Element.Dark, Element.Ice],
         attacks: [atk(L("Garra del vacío", "Void claw", "Leerenklaue"), P, Element.Dark, 1.0, {weight: 3}), atk(L("Aliento abisal", "Abyssal breath", "Abgrundatem"), M, Element.Dark, 1.2, {weight: 2, status: StatusKey.Burn, statusChance: 0.3}), atk(L("Tormenta de sombras", "Shadow storm", "Schattensturm"), M, Element.Dark, 0.45, {hits: 4}), atk(L("Mirada del vacío", "Void gaze", "Leerenblick"), M, Element.Dark, 0.6, {status: StatusKey.Charm, statusChance: 0.4})],
-        xp: 1000, gold: 800, diamonds: 4, body: MonsterBody.Dragon, colors: ["#3b1f6b", "#140a26", "#e599f7"], size: 2.0, enrageExtraActions: 1})
+        xp: 1000, gold: 800, diamonds: 4, body: MonsterBody.Dragon, colors: ["#3b1f6b", "#140a26", "#e599f7"], size: 2.0, enrageExtraActions: 1}),
+    monster({key: MonsterKey.TrainingDummy, name: L("Muñeco de práctica", "Training dummy", "Übungspuppe"), tier: 1, stats: stats(5000, 0, 0, 0, 0, 0, 0), element: Element.Neutral, weak: [], resist: [],
+        attacks: [], xp: 0, gold: 0, body: MonsterBody.Golem, colors: ["#c9a56a", "#5a4122", "#e8e2d0"]})
 ];
 
 export const MONSTERS: Record<MonsterKey, MonsterDef> = Object.fromEntries(MONSTER_LIST.map((def: MonsterDef) => [def.key, def])) as Record<MonsterKey, MonsterDef>;

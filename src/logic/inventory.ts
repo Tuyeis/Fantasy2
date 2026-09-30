@@ -1,6 +1,6 @@
 import {tr} from "../core/i18n";
 import {SaveData} from "../core/save-store";
-import {EquipmentData, GearInstance, InventoryData} from "../data/dungeon-types";
+import {GearInstance} from "../data/dungeon-types";
 import {ALL_SLOTS, EquipSlot, isGear, ItemKey, ITEMS, slotOf} from "../data/items";
 
 export function itemName(key: ItemKey, plus: number = 0): string {
@@ -100,17 +100,6 @@ export function equippedGear(save: SaveData): GearInstance[] {
         }
     }
     return result;
-}
-
-export function cloneInventory(inventory: InventoryData): InventoryData {
-    return {
-        stacks: {...inventory.stacks},
-        gear: inventory.gear.map((g: GearInstance) => ({...g}))
-    };
-}
-
-export function cloneEquipment(equipment: EquipmentData): EquipmentData {
-    return {...equipment};
 }
 
 /** Stackable items sorted for lists. */

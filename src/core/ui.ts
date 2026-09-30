@@ -26,18 +26,14 @@ export function el<K extends keyof HTMLElementTagNameMap>(tag: K, opts: ElOption
         Object.assign(node.style, opts.style);
     }
     if (opts.onClick) {
-        const handler: (e: MouseEvent) => void = opts.onClick;
-        node.addEventListener("click", (e: Event) => handler(e as MouseEvent));
+        // Widened to HTMLElement so the typed "click" overload (MouseEvent) applies to the generic tag.
+        const target: HTMLElement = node;
+        target.addEventListener("click", opts.onClick);
     }
     if (opts.disabled && node instanceof HTMLButtonElement) {
         node.disabled = true;
     }
-    for (const child of children) {
-        if (child === null || child === undefined || child === false) {
-            continue;
-        }
-        node.append(child);
-    }
+    node.append(...children.filter((child: Child): child is Node | string => child !== null && child !== undefined && child !== false));
     return node;
 }
 
@@ -53,7 +49,6 @@ export interface WindowOptions {
 }
 
 export interface WindowHandle {
-    root: HTMLElement;
     body: HTMLElement;
     footer: HTMLElement;
     setTitle: (title: string) => void;
@@ -100,7 +95,6 @@ export class UiLayer {
         const backdrop: HTMLElement = el("div", {cls: "window-backdrop"}, [panel]);
         let closed: boolean = false;
         const handle: WindowHandle = {
-            root: panel,
             body: body,
             footer: footer,
             setTitle: (title: string) => {
@@ -157,16 +151,11 @@ export class UiLayer {
         }
     }
 
-    public confirm(text: string, onYes: () => void, onNo?: () => void): void {
+    public confirm(text: string, onYes: () => void): void {
         const win: WindowHandle = this.openWindow({title: "", cls: "window-small", closable: false});
         win.body.append(el("p", {cls: "dialog-text", text: text}));
         win.footer.append(
-            button(t("no"), () => {
-                win.close();
-                if (onNo) {
-                    onNo();
-                }
-            }),
+            button(t("no"), () => win.close()),
             button(t("yes"), () => {
                 win.close();
                 onYes();
@@ -174,12 +163,9 @@ export class UiLayer {
         );
     }
 
-    public message(title: string, text: string, onOk?: () => void, extra?: Node): void {
+    public message(title: string, text: string, onOk?: () => void): void {
         const win: WindowHandle = this.openWindow({title: title, cls: "window-small", closable: false});
         win.body.append(el("p", {cls: "dialog-text", text: text}));
-        if (extra) {
-            win.body.append(extra);
-        }
         win.footer.append(button(t("ok"), () => {
             win.close();
             if (onOk) {

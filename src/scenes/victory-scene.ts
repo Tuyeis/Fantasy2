@@ -1,6 +1,7 @@
 import {MusicTrack} from "../core/audio-engine";
 import {Game, Scene} from "../core/game";
 import {t, tr} from "../core/i18n";
+import {pick} from "../core/rng";
 import {SaveData} from "../core/save-store";
 import {button, el} from "../core/ui";
 import {CLASSES} from "../data/hero-classes";
@@ -88,7 +89,7 @@ export class VictoryScene implements Scene {
                 x: this.game.width * (0.15 + Math.random() * 0.7),
                 y: this.game.height * (0.12 + Math.random() * 0.3),
                 life: 1.4,
-                color: ["#ffd43b", "#ff8787", "#74c0fc", "#b197fc", "#69db7c"][Math.floor(Math.random() * 5)]
+                color: pick(["#ffd43b", "#ff8787", "#74c0fc", "#b197fc", "#69db7c"])
             });
         }
         this.fireworks = this.fireworks.filter((f: Firework) => {

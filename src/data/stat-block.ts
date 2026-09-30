@@ -40,10 +40,6 @@ export function stats(hp: number, mana: number, atk: number, def: number, matk: 
     return {hp: hp, mana: mana, atk: atk, def: def, matk: matk, mdef: mdef, crit: crit};
 }
 
-export function emptyStats(): StatBlock {
-    return stats(0, 0, 0, 0, 0, 0, 0);
-}
-
 /** Returns a + b * factor (new object). */
 export function addStats(a: StatBlock, b: Partial<StatBlock>, factor: number = 1): StatBlock {
     const result: StatBlock = {...a};

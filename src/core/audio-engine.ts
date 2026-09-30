@@ -50,11 +50,8 @@ function midiToFreq(note: number): number {
 }
 
 function rep(pattern: number[], times: number): number[] {
-    let result: number[] = [];
-    for (let i: number = 0; i < times; i++) {
-        result = result.concat(pattern);
-    }
-    return result;
+    const copies: number[][] = new Array<number[]>(times).fill(pattern);
+    return copies.flat();
 }
 
 function transpose(notes: number[], semitones: number): number[] {
@@ -145,11 +142,6 @@ export class AudioEngine {
     private track: MusicTrack = MusicTrack.None;
     private step: number = 0;
     private nextStepTime: number = 0;
-    private timer: number | null = null;
-
-    public get running(): boolean {
-        return this.timer !== null;
-    }
 
     /** Must be called from a user gesture before audio can play. */
     public unlock(): void {
@@ -167,7 +159,7 @@ export class AudioEngine {
             this.sfxGain.connect(this.master);
             this.noiseBuffer = this.createNoise();
             this.applyVolumes();
-            this.timer = window.setInterval(() => this.schedule(), 25);
+            window.setInterval(() => this.schedule(), 25);
         }
         if (this.ctx.state === "suspended") {
             void this.ctx.resume();

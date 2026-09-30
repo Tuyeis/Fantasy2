@@ -4,11 +4,10 @@ import {t} from "../core/i18n";
 import {SaveData} from "../core/save-store";
 import {button, el, ToastKind, WindowHandle} from "../core/ui";
 import {GearInstance} from "../data/dungeon-types";
-import {ItemCategory, ItemDef, ITEMS, sellPrice} from "../data/items";
-import {bagHasRoomFor} from "../logic/bank";
-import {buyPrice, buyWithDiamonds, buyWithGold, sellGear, sellStack} from "../logic/economy";
+import {ItemCategory, ItemDef, ItemKey, ITEMS, sellPrice} from "../data/items";
+import {buyPrice, Currency, gearSellPrice, sellGear, sellStack} from "../logic/economy";
 import {countItem, isEquipped, itemName, ownedStacks, stackCount} from "../logic/inventory";
-import {diamondText, gearDescription, goldText, itemDescription, itemRow, npcLine, sectionTitle, tabBar} from "./window-helpers";
+import {buyButton, diamondText, gearDescription, goldText, itemDescription, itemRow, npcLine, rerender, sectionTitle, tabBar, walletLine} from "./window-helpers";
 
 enum ShopTab {
     Buy = "buy",
@@ -28,51 +27,26 @@ export function openShop(game: Game, onChange: () => void): void {
         render();
     };
 
+    const bought: (key: ItemKey) => () => void = (key: ItemKey) => () => {
+        game.ui.toast(t("bought", {item: itemName(key)}), ToastKind.Good);
+        afterTrade();
+    };
+
     const renderBuy: () => HTMLElement[] = () => {
         const nodes: HTMLElement[] = [];
         const stock: ItemDef[] = (Object.values(ITEMS) as ItemDef[])
             .filter((def: ItemDef) => def.inShop)
             .sort((a: ItemDef, b: ItemDef) => CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category) || a.price - b.price);
-        nodes.push(el("div", {cls: "list"}, stock.map((def: ItemDef) => {
-            const price: number = buyPrice(save, def.key);
-            return itemRow(def.key, itemName(def.key), itemDescription(def.key) + " · " + t("owned", {n: countItem(save, def.key)}), [
-                goldText(price),
-                button(t("buy"), () => {
-                    if (!bagHasRoomFor(save, def.key)) {
-                    game.audio.play(Sfx.Error);
-                    game.ui.toast(t("bagFull"), ToastKind.Bad);
-                } else if (buyWithGold(save, def.key)) {
-                        game.audio.play(Sfx.Buy);
-                        game.ui.toast(t("bought", {item: itemName(def.key)}), ToastKind.Good);
-                        afterTrade();
-                    } else {
-                        game.audio.play(Sfx.Error);
-                        game.ui.toast(t("notEnoughGold"), ToastKind.Bad);
-                    }
-                }, {cls: "btn-small btn-primary", disabled: save.hero.gold < price})
-            ]);
-        })));
+        nodes.push(el("div", {cls: "list"}, stock.map((def: ItemDef) => itemRow(def.key, itemName(def.key), itemDescription(def.key) + " · " + t("owned", {n: countItem(save, def.key)}), [
+            goldText(buyPrice(save, def.key)),
+            buyButton(game, def.key, Currency.Gold, bought(def.key))
+        ]))));
         const premium: ItemDef[] = (Object.values(ITEMS) as ItemDef[]).filter((def: ItemDef) => def.diamondPrice !== undefined);
         nodes.push(sectionTitle(t("premium")));
-        nodes.push(el("div", {cls: "list"}, premium.map((def: ItemDef) => {
-            const price: number = def.diamondPrice as number;
-            return itemRow(def.key, itemName(def.key), itemDescription(def.key) + " · " + t("owned", {n: countItem(save, def.key)}), [
-                diamondText(price),
-                button(t("buy"), () => {
-                    if (!bagHasRoomFor(save, def.key)) {
-                    game.audio.play(Sfx.Error);
-                    game.ui.toast(t("bagFull"), ToastKind.Bad);
-                } else if (buyWithDiamonds(save, def.key)) {
-                        game.audio.play(Sfx.Buy);
-                        game.ui.toast(t("bought", {item: itemName(def.key)}), ToastKind.Good);
-                        afterTrade();
-                    } else {
-                        game.audio.play(Sfx.Error);
-                        game.ui.toast(t("notEnoughDiamonds"), ToastKind.Bad);
-                    }
-                }, {cls: "btn-small", disabled: save.hero.diamonds < price})
-            ]);
-        })));
+        nodes.push(el("div", {cls: "list"}, premium.map((def: ItemDef) => itemRow(def.key, itemName(def.key), itemDescription(def.key) + " · " + t("owned", {n: countItem(save, def.key)}), [
+            diamondText(def.diamondPrice as number),
+            buyButton(game, def.key, Currency.Diamonds, bought(def.key))
+        ]))));
         return nodes;
     };
 
@@ -90,9 +64,8 @@ export function openShop(game: Game, onChange: () => void): void {
             ]));
         }
         for (const gear of save.inventory.gear.filter((g: GearInstance) => !isEquipped(save, g.uid))) {
-            const price: number = Math.round(sellPrice(gear.key) * (1 + 0.25 * gear.plus));
             rows.push(itemRow(gear.key, itemName(gear.key, gear.plus), gearDescription(gear), [
-                goldText(price),
+                goldText(gearSellPrice(gear)),
                 button(t("sell"), () => {
                     const gold: number = sellGear(save, gear.uid);
                     game.audio.play(Sfx.Coin);
@@ -108,10 +81,6 @@ export function openShop(game: Game, onChange: () => void): void {
     };
 
     const render: () => void = () => {
-        const header: HTMLElement = el("div", {cls: "hud-line", style: {marginBottom: "8px"}}, [
-            el("span", {}, [t("gold") + ": ", el("b", {text: String(save.hero.gold)})]),
-            el("span", {}, [t("diamonds") + ": ", el("b", {text: String(save.hero.diamonds)})])
-        ]);
         const tabs: HTMLElement = tabBar<ShopTab>([
             {key: ShopTab.Buy, label: t("buy")},
             {key: ShopTab.Sell, label: t("sell")}
@@ -119,9 +88,7 @@ export function openShop(game: Game, onChange: () => void): void {
             tab = next;
             render();
         });
-        const scrollTop: number = win.body.scrollTop;
-        win.body.replaceChildren(npcLine(t("shopGreeting")), header, tabs, ...(tab === ShopTab.Buy ? renderBuy() : renderSell()));
-        win.body.scrollTop = scrollTop;
+        rerender(win, npcLine(t("shopGreeting")), walletLine(save), tabs, ...(tab === ShopTab.Buy ? renderBuy() : renderSell()));
     };
     render();
 }
