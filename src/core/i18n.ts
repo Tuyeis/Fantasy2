@@ -270,7 +270,7 @@ const UI = {
 
     // Coliseum / arena
     coliseum: ["Coliseo", "Coliseum", "Kolosseum"],
-    coliseumGreeting: ["Combate en tiempo real: 5 oleadas. WASD mover, Espacio esquivar, Clic/J golpe, Clic dcho/K rayo.", "Real-time combat: 5 waves. WASD move, Space dash, Click/J strike, Right-click/K bolt.", "Echtzeitkampf: 5 Wellen. WASD bewegen, Leertaste Ausweichen, Klick/J Schlag, Rechtsklick/K Blitz."],
+    coliseumGreeting: ["Combate en tiempo real: 5 oleadas. WASD mover, Espacio esquivar, Clic/J golpe, Clic dcho/K rayo, 1-8 barra (hechizos y pociones).", "Real-time combat: 5 waves. WASD move, Space dash, Click/J strike, Right-click/K bolt, 1-8 bar (spells and potions).", "Echtzeitkampf: 5 Wellen. WASD bewegen, Leertaste Ausweichen, Klick/J Schlag, Rechtsklick/K Blitz, 1-8 Leiste (Zauber und Tränke)."],
     startArena: ["Entrar a la arena", "Enter the arena", "Arena betreten"],
     wave: ["Oleada {n}/{max}", "Wave {n}/{max}", "Welle {n}/{max}"],
     arenaWon: ["¡Has sobrevivido a todas las oleadas!", "You survived every wave!", "Du hast alle Wellen überlebt!"],

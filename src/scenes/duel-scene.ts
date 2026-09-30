@@ -35,7 +35,7 @@ import {heroWeaponType} from "../render/class-hero";
 import {WeaponType} from "../render/puppet/puppet-types";
 import {openBattlePause} from "./battle-pause";
 import {CombatScene, CombatSummary} from "./combat-scene";
-import {clampToArena, RealTimeBolt, RealTimeHero} from "./real-time-hero";
+import {abilityCooldown, clampToArena, POTION_COOLDOWN, RealTimeBolt, RealTimeHero, SECONDS_PER_TURN} from "./real-time-hero";
 import {bar} from "./world-helpers";
 
 /** Real-time duel against the monster of a dungeon room (the hybrid-combat alternative to turns). */
@@ -58,9 +58,6 @@ const LEAP_REACH: number = 2;
 const CHASE_SPEED_MULT: number = 1.9;
 /** Share of max mana regenerated per second. */
 const MANA_REGEN: number = 0.025;
-/** Real-time pacing of abilities: base cooldown plus a share of the mana cost. */
-const ABILITY_BASE_COOLDOWN: number = 2.5;
-const ABILITY_COOLDOWN_PER_MANA: number = 0.22;
 /**
  * You act several times per enemy attack in real time (turns are 1:1), so monsters need more HP here.
  * Tuned with tools/duel-bot.js so a real-time fight costs about as much HP as the same fight by turns.
@@ -73,14 +70,10 @@ const AGGRESSION_PER_FLOOR: number = 0.08;
 /** Hits push the monster back (px/s), unless it is winding up or lunging: then it keeps coming. */
 const KNOCKBACK_LIGHT: number = 70;
 const KNOCKBACK_HEAVY: number = 20;
-/** One turn of a buff lasts this many seconds in real time. */
-const SECONDS_PER_TURN: number = 3;
 /** Touching a monster hurts (fraction of its melee power) at most this often. */
 const CONTACT_POWER: number = 0.55;
 const CONTACT_COOLDOWN: number = 0.75;
 const SPRITE_SCALE: number = 1.45;
-/** Seconds between potions in real time (no chugging a whole stack mid-fight). */
-const POTION_COOLDOWN: number = 2.5;
 const FOCUS_PER_HIT: number = 0.12;
 const FOCUS_PER_DODGE: number = 0.25;
 
@@ -113,10 +106,6 @@ interface Dot {
     until: number;
     next: number;
     color: string;
-}
-
-function abilityCooldown(def: AbilityDef): number {
-    return ABILITY_BASE_COOLDOWN + def.manaCost * ABILITY_COOLDOWN_PER_MANA;
 }
 
 export class DuelScene implements Scene, RealTimeHero {

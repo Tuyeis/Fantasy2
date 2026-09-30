@@ -5,14 +5,23 @@ import {t} from "../core/i18n";
 import {chance, pick, randFloat} from "../core/rng";
 import {SaveData} from "../core/save-store";
 import {el, ToastKind} from "../core/ui";
-import {DamageType} from "../data/abilities";
+import {AbilityDef, AbilityKey, AbilityKind, DamageType} from "../data/abilities";
+import {ActionBarSlot} from "../data/action-bar";
+import {ItemDef, ItemKey, ITEMS} from "../data/items";
+import {StatKey} from "../data/stat-block";
+import {StatusKey} from "../data/status-effect";
+import {syncActionBar} from "../logic/action-bar";
+import {removeItem} from "../logic/inventory";
+import {effectiveAbility} from "../logic/talents";
+import {FxStyle, fxImpactDelay, fxStyleOf, RANGED_STYLES, SpellFxLayer} from "../render/spell-fx";
+import {ActionBarHud, pressedSlot} from "./action-bar-hud";
 import {Element} from "../data/element";
 import {floorDef} from "../data/floors";
 import {MonsterDef, MonsterKey, MONSTERS} from "../data/monsters";
 import {StatBlock} from "../data/stat-block";
 import {createEnemyCombatant, createHeroCombatant} from "../logic/combat-engine";
-import {Combatant, DamageRoll, rollDamage} from "../logic/combat-math";
-import {computeHeroStats, dashCharges} from "../logic/hero-stats";
+import {Combatant, DamageRoll, effectiveStat, rollDamage} from "../logic/combat-math";
+import {computeHeroStats, dashCharges, potionMultiplier} from "../logic/hero-stats";
 import {drawClassHero, heroWeaponType} from "../render/class-hero";
 import {WeaponType} from "../render/puppet/puppet-types";
 import {drawText, ellipsePath, glow, hash, rgba} from "../render/draw-utils";
@@ -20,7 +29,7 @@ import {FloaterLayer} from "../render/floater-layer";
 import {defaultPose} from "../render/hero-sprite";
 import {defaultMonsterPose, drawMonster} from "../render/monster-sprite";
 import {openBattlePause} from "./battle-pause";
-import {RealTimeBolt, RealTimeHero} from "./real-time-hero";
+import {abilityCooldown, POTION_COOLDOWN, RealTimeBolt, RealTimeHero, SECONDS_PER_TURN} from "./real-time-hero";
 import {TownScene, TownSpawn} from "./town-scene";
 import {bar} from "./world-helpers";
 
@@ -36,6 +45,16 @@ const ARROW_SPEED: number = 520;
 const BOLT_COOLDOWN: number = 0.35;
 const BOLT_MANA: number = 5;
 const WAVES: number = 5;
+/** How far an ability reaches for a target: spells and arrows / close-range techniques. */
+const RANGED_ABILITY_REACH: number = 460;
+const MELEE_ABILITY_REACH: number = 150;
+/** Area styles hit every monster this close to the target (monsters come in packs here). */
+const AREA_STYLES: FxStyle[] = [FxStyle.Nova, FxStyle.ArrowRain, FxStyle.Pillar, FxStyle.Swarm, FxStyle.SkyBeam];
+const AREA_RADIUS: number = 95;
+/** Freeze / sleep / charm keep a monster still this long; burn and poison tick this long. */
+const STUN_SECONDS: number = 2.2;
+const DOT_SECONDS: number = 4;
+const DOT_SHARE: number = 0.04;
 const SPRITE_SCALE: number = 1.45;
 
 interface ArenaEnemy {
@@ -51,6 +70,26 @@ interface ArenaEnemy {
     speed: number;
     knockX: number;
     knockY: number;
+    /** Seconds it stays still (freeze, sleep, charm). */
+    stun: number;
+    /** Burn/poison: damage ticks until this time. */
+    dotUntil: number;
+    dotNext: number;
+    dotColor: string;
+}
+
+/** An ability hit on its way to a monster (lands when the effect arrives). */
+interface PendingHit {
+    at: number;
+    def: AbilityDef;
+    target: ArenaEnemy;
+    last: boolean;
+}
+
+interface TimedBuff {
+    stat: StatKey;
+    amount: number;
+    until: number;
 }
 
 interface Bolt extends RealTimeBolt {
@@ -90,6 +129,12 @@ export class ArenaScene implements Scene, RealTimeHero {
     private bolts: Bolt[] = [];
     private readonly bowWielder: boolean;
     private readonly floaters: FloaterLayer = new FloaterLayer({riseSpeed: 40, size: 18});
+    private readonly spells: SpellFxLayer = new SpellFxLayer();
+    private readonly cooldowns: Map<AbilityKey, number> = new Map<AbilityKey, number>();
+    private potionCooldown: number = 0;
+    private pendingHits: PendingHit[] = [];
+    private timedBuffs: TimedBuff[] = [];
+    private actionBar: ActionBarHud | null = null;
     private wave: number = 0;
     private waveTimer: number = 2;
     private state: ArenaState = ArenaState.Countdown;
@@ -137,6 +182,9 @@ export class ArenaScene implements Scene, RealTimeHero {
         this.hudEl = el("div", {cls: "hud-top"});
         this.game.ui.hud.append(this.hudEl);
         this.game.ui.hud.append(el("div", {cls: "hud-controls", text: t("coliseumGreeting")}));
+        this.actionBar = new ActionBarHud(() => this.save, (index: number) => this.useSlot(index), () => this.game.saveGame());
+        this.actionBar.refresh();
+        this.game.ui.hud.append(this.actionBar.element);
         this.refreshHud();
     }
 
@@ -150,6 +198,15 @@ export class ArenaScene implements Scene, RealTimeHero {
             bar("mana", this.hero.mana, this.hero.stats.mana, t("mana") + " " + Math.floor(this.hero.mana) + "/" + this.hero.stats.mana),
             el("div", {cls: "hud-line", style: {marginTop: "5px"}}, [el("span", {}, [t("dashCharges") + ": ", el("b", {text: RealTimeHero.pips(this)})])])
         ]));
+        if (this.actionBar) {
+            this.actionBar.refresh();
+            this.actionBar.update({
+                cooldownOf: (slot: ActionBarSlot) => slot.ability
+                    ? {left: this.cooldowns.get(slot.ability) ?? 0, total: abilityCooldown(effectiveAbility(this.save, slot.ability))}
+                    : {left: this.potionCooldown, total: POTION_COOLDOWN},
+                mana: this.hero.mana
+            });
+        }
     }
 
     // ------------------------------------------------------------ waves
@@ -177,7 +234,8 @@ export class ArenaScene implements Scene, RealTimeHero {
         const ranged: boolean = def.attacks[0].type === DamageType.Magical;
         this.enemies.push({
             def: def, combatant: combatant, x: x, y: y, hitCooldown: 1, shootTimer: randFloat(1.5, 3), flash: 0,
-            ranged: ranged, armored: armored, speed: ranged ? 55 : randFloat(75, 105), knockX: 0, knockY: 0
+            ranged: ranged, armored: armored, speed: ranged ? 55 : randFloat(75, 105), knockX: 0, knockY: 0,
+            stun: 0, dotUntil: 0, dotNext: 0, dotColor: ""
         });
     }
 
@@ -196,6 +254,8 @@ export class ArenaScene implements Scene, RealTimeHero {
             return;
         }
         const input: Input = this.game.input;
+        this.spells.update(dt);
+        this.updateAbilities(dt);
         this.updateHero(dt, input);
         if (this.state === ArenaState.Countdown) {
             this.waveTimer -= dt;
@@ -254,6 +314,10 @@ export class ArenaScene implements Scene, RealTimeHero {
         if ((input.wasPressed("KeyK") || input.mouseRightClicked) && this.boltTimer <= 0 && this.state === ArenaState.Fighting) {
             this.castBolt();
         }
+        const slot: number = pressedSlot(input);
+        if (slot >= 0) {
+            this.useSlot(slot);
+        }
     }
 
     private moveHero(dx: number, dy: number): void {
@@ -299,16 +363,176 @@ export class ArenaScene implements Scene, RealTimeHero {
     }
 
     private hitEnemy(enemy: ArenaEnemy, roll: DamageRoll, nx: number, ny: number): void {
-        enemy.combatant.hp -= roll.amount;
-        enemy.flash = 1;
         enemy.knockX = nx * 220;
         enemy.knockY = ny * 220;
-        this.floaters.push({text: roll.amount + (roll.crit ? "!" : ""), x: enemy.x, y: enemy.y - 50, life: 0.8, color: roll.crit ? "#ffd43b" : "#fff"});
         this.game.audio.play(roll.crit ? Sfx.Crit : Sfx.Hit);
+        this.damageEnemy(enemy, roll.amount, roll.amount + (roll.crit ? "!" : ""), roll.crit ? "#ffd43b" : "#fff");
+    }
+
+    private damageEnemy(enemy: ArenaEnemy, amount: number, text: string, color: string): void {
+        enemy.combatant.hp -= amount;
+        enemy.flash = 1;
+        this.floaters.push({text: text, x: enemy.x, y: enemy.y - 50, life: 0.8, color: color});
         if (enemy.combatant.hp <= 0) {
             this.enemies = this.enemies.filter((e: ArenaEnemy) => e !== enemy);
             this.kills++;
         }
+    }
+
+    // ------------------------------------------------------------ action bar (abilities and potions)
+
+    /** Action bar slot 1-8: an ability or a potion. */
+    private useSlot(index: number): void {
+        const slot: ActionBarSlot | null = syncActionBar(this.save)[index] ?? null;
+        if (!slot || this.state !== ArenaState.Fighting) {
+            return;
+        }
+        if (slot.kind === ActionBarSlot.Kind.Item && slot.item) {
+            this.drinkPotion(slot.item);
+        } else if (slot.ability) {
+            this.useAbility(slot.ability);
+        }
+    }
+
+    private drinkPotion(key: ItemKey): void {
+        const def: ItemDef = ITEMS[key];
+        if (!def.heal) {
+            return;
+        }
+        if (this.potionCooldown > 0) {
+            this.game.audio.play(Sfx.Error);
+            this.floaters.push({text: t("potionCooldown"), x: this.x, y: this.y - 80, life: 0.9, color: "#ffd43b"});
+            return;
+        }
+        if (!removeItem(this.save, key, 1)) {
+            this.game.audio.play(Sfx.Error);
+            this.floaters.push({text: t("noUsableItems"), x: this.x, y: this.y - 80, life: 0.9, color: "#ffd43b"});
+            return;
+        }
+        const mult: number = potionMultiplier(this.save);
+        this.potionCooldown = POTION_COOLDOWN;
+        this.game.audio.play(Sfx.Heal);
+        if (def.heal.hp) {
+            this.healHero(Math.round(def.heal.hp * mult));
+        }
+        if (def.heal.mana) {
+            this.hero.mana = Math.min(this.hero.stats.mana, this.hero.mana + Math.round(def.heal.mana * mult));
+            this.floaters.push({text: "+" + Math.round(def.heal.mana * mult), x: this.x + 18, y: this.y - 60, life: 0.9, color: "#74c0fc"});
+        }
+        this.game.saveGame();
+        this.actionBar?.refresh();
+    }
+
+    private healHero(amount: number): void {
+        const before: number = this.hero.hp;
+        this.hero.hp = Math.min(this.hero.stats.hp, this.hero.hp + amount);
+        const gained: number = Math.round(this.hero.hp - before);
+        if (gained > 0) {
+            this.floaters.push({text: "+" + gained, x: this.x, y: this.y - 70, life: 0.9, color: "#69db7c"});
+        }
+    }
+
+    /** The monster closest to where you aim (mouse), within reach; otherwise the nearest one in reach. */
+    private abilityTarget(reach: number): ArenaEnemy | null {
+        let best: ArenaEnemy | null = null;
+        let bestScore: number = Infinity;
+        for (const enemy of this.enemies) {
+            const dx: number = enemy.x - this.x;
+            const dy: number = enemy.y - this.y;
+            const dist: number = Math.hypot(dx, dy) || 1;
+            if (dist > reach + 18 * enemy.def.size) {
+                continue;
+            }
+            const dot: number = (dx * this.aim.x + dy * this.aim.y) / dist;
+            // Favour monsters in front of the cursor; distance only breaks ties.
+            const score: number = (1 - dot) * 400 + dist;
+            if (score < bestScore) {
+                bestScore = score;
+                best = enemy;
+            }
+        }
+        return best;
+    }
+
+    private useAbility(key: AbilityKey): void {
+        if ((this.cooldowns.get(key) ?? 0) > 0) {
+            return;
+        }
+        const def: AbilityDef = effectiveAbility(this.save, key);
+        if (this.hero.mana < def.manaCost) {
+            this.game.audio.play(Sfx.Error);
+            this.floaters.push({text: t("notEnoughMana"), x: this.x, y: this.y - 80, life: 0.8, color: "#74c0fc"});
+            return;
+        }
+        const from: Vec2 = {x: this.x + this.facing * 10, y: this.y - 48};
+        if (def.kind === AbilityKind.Damage) {
+            const ranged: boolean = RANGED_STYLES.includes(fxStyleOf(key));
+            const target: ArenaEnemy | null = this.abilityTarget(ranged ? RANGED_ABILITY_REACH : MELEE_ABILITY_REACH);
+            if (!target) {
+                this.game.audio.play(Sfx.Error);
+                this.floaters.push({text: t("tooFar"), x: this.x, y: this.y - 80, life: 0.8, color: "#ffd43b"});
+                return;
+            }
+            const hits: number = def.hits ?? 1;
+            this.spells.cast(key, def.element, from, {x: target.x, y: target.y - 42 * target.def.size}, SPRITE_SCALE * 0.9, hits);
+            const delay: number = fxImpactDelay(key);
+            for (let i: number = 0; i < hits; i++) {
+                this.pendingHits.push({at: this.time + delay + i * 0.14, def: def, target: target, last: i === hits - 1});
+            }
+            this.swing = def.damageType === DamageType.Physical ? 1 : this.swing;
+            this.game.audio.play(def.damageType === DamageType.Physical ? Sfx.Swing : Sfx.Magic);
+        } else {
+            this.spells.cast(key, def.element, from, from, SPRITE_SCALE * 0.9, 1);
+            this.game.audio.play(def.kind === AbilityKind.Heal ? Sfx.Heal : Sfx.Unlock);
+        }
+        this.hero.mana -= def.manaCost;
+        this.cooldowns.set(key, abilityCooldown(def));
+        if (def.healPct !== undefined) {
+            this.healHero(Math.round(this.hero.stats.hp * def.healPct + effectiveStat(this.hero, StatKey.Matk) * (def.healPower ?? 0)));
+        }
+        for (const buff of def.buffs ?? []) {
+            this.timedBuffs.push({stat: buff.stat, amount: buff.amount, until: this.time + buff.turns * SECONDS_PER_TURN});
+        }
+    }
+
+    private updateAbilities(dt: number): void {
+        for (const [key, left] of this.cooldowns) {
+            this.cooldowns.set(key, Math.max(0, left - dt));
+        }
+        this.potionCooldown = Math.max(0, this.potionCooldown - dt);
+        this.timedBuffs = this.timedBuffs.filter((buff: TimedBuff) => buff.until > this.time);
+        this.hero.buffs = this.timedBuffs.map((buff: TimedBuff) => ({stat: buff.stat, amount: buff.amount, turns: 1, source: "rt"}));
+        const due: PendingHit[] = this.pendingHits.filter((hit: PendingHit) => hit.at <= this.time);
+        this.pendingHits = this.pendingHits.filter((hit: PendingHit) => hit.at > this.time);
+        for (const hit of due) {
+            const area: boolean = AREA_STYLES.includes(fxStyleOf(hit.def.key));
+            const victims: ArenaEnemy[] = area
+                ? this.enemies.filter((e: ArenaEnemy) => Math.hypot(e.x - hit.target.x, e.y - hit.target.y) <= AREA_RADIUS)
+                : this.enemies.filter((e: ArenaEnemy) => e === hit.target);
+            for (const victim of victims) {
+                const roll: DamageRoll = rollDamage(this.hero, victim.combatant, hit.def.damageType ?? DamageType.Physical, hit.def.element, hit.def.power ?? 1, hit.def.critBonus ?? 0);
+                const dx: number = victim.x - this.x;
+                const dy: number = victim.y - this.y;
+                const dist: number = Math.hypot(dx, dy) || 1;
+                this.hitEnemy(victim, roll, dx / dist, dy / dist);
+                if (hit.def.lifesteal) {
+                    this.healHero(Math.round(roll.amount * hit.def.lifesteal));
+                }
+                if (hit.last && hit.def.status && hit.def.statusChance && chance(hit.def.statusChance)) {
+                    this.applyStatus(victim, hit.def.status);
+                }
+            }
+        }
+    }
+
+    private applyStatus(enemy: ArenaEnemy, status: StatusKey): void {
+        if (status === StatusKey.Burn || status === StatusKey.Poison) {
+            enemy.dotUntil = this.time + DOT_SECONDS;
+            enemy.dotNext = this.time + 1;
+            enemy.dotColor = status === StatusKey.Burn ? "#ff922b" : "#94d82d";
+            return;
+        }
+        enemy.stun = STUN_SECONDS * (enemy.combatant.controlResistant ? 0.45 : 1);
     }
 
     private hurtHero(amount: number): void {
@@ -334,6 +558,15 @@ export class ArenaScene implements Scene, RealTimeHero {
             enemy.y += enemy.knockY * dt;
             enemy.knockX *= Math.pow(0.002, dt);
             enemy.knockY *= Math.pow(0.002, dt);
+            if (enemy.dotNext > 0 && this.time >= enemy.dotNext && enemy.dotNext <= enemy.dotUntil) {
+                enemy.dotNext += 1;
+                const amount: number = Math.max(1, Math.round(enemy.combatant.stats.hp * DOT_SHARE));
+                this.damageEnemy(enemy, amount, String(amount), enemy.dotColor);
+            }
+            if (enemy.stun > 0) {
+                enemy.stun -= dt;
+                continue;
+            }
             const dx: number = this.x - enemy.x;
             const dy: number = this.y - enemy.y;
             const dist: number = Math.hypot(dx, dy) || 1;
@@ -505,6 +738,7 @@ export class ArenaScene implements Scene, RealTimeHero {
                 RealTimeBolt.draw(ctx, bolt);
             }
         }
+        this.spells.draw(ctx);
         this.floaters.draw(ctx);
         ctx.restore();
         if (this.state === ArenaState.Countdown) {

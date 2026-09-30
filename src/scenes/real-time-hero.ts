@@ -1,4 +1,5 @@
 import {Vec2} from "../core/input";
+import {AbilityDef} from "../data/abilities";
 import {glow} from "../render/draw-utils";
 
 /** Arena edge: walkers stay inside this share of the arena ellipse. */
@@ -102,4 +103,16 @@ export namespace RealTimeBolt {
         ctx.arc(bolt.x, bolt.y, 5, 0, Math.PI * 2);
         ctx.fill();
     }
+}
+
+/** Real-time pacing of abilities: base cooldown plus a share of the mana cost (duel and coliseum). */
+const ABILITY_BASE_COOLDOWN: number = 2.5;
+const ABILITY_COOLDOWN_PER_MANA: number = 0.22;
+/** One turn of a buff lasts this many seconds in real time. */
+export const SECONDS_PER_TURN: number = 3;
+/** Seconds between potions in real time (no chugging a whole stack mid-fight). */
+export const POTION_COOLDOWN: number = 2.5;
+
+export function abilityCooldown(def: AbilityDef): number {
+    return ABILITY_BASE_COOLDOWN + def.manaCost * ABILITY_COOLDOWN_PER_MANA;
 }
